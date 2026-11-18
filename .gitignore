@@ -1,0 +1,8 @@
+node_modules
+dist
+__pycache__/
+*.pyc
+.DS_Store
+*.zip
+# package manager: pnpm (commit pnpm-lock.yaml), the npm lock file is not used
+package-lock.json
