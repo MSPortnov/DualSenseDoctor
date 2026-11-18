@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.12
+- Installation from GitHub with one command (`install.sh`, checks the SHA-256 of the release), installation from Decky ("Install Plugin from URL") and from source are described in the README.
+- The release workflow checks that the tag, `package.json` and `main.py` have the same version and attaches a `.sha256` file to `DualSenseDoctor.zip`.
+- No functional changes in the plugin.
+
 ## 0.8.11
 - The focus pulse is once every 1.3 seconds (19 pulses, about 25 seconds).
 

@@ -32,25 +32,49 @@ Steam Input включается только настройкой «Тольк�
 
 Известное ограничение: из-за шага подхвата контроллер начинает работать примерно через 5–6 секунд после пробуждения, нажатия раньше этого игнорируются.
 
-## Установка
+## Установка и обновление
 
-**Из релиза (нужен режим разработчика Decky):** скачайте `DualSenseDoctor.zip` на странице [Releases](https://github.com/MSPortnov/DualSenseDoctor/releases), в Decky включите режим разработчика и выберите «Install plugin from ZIP».
+Четыре способа, выбирайте удобный. Та же команда (или тот же ZIP) ставит плагин и позже обновляет его,
+настройки сохраняются, потому что хранятся вне папки плагина.
 
-**Из исходников:** нужны Node.js 18+ и [pnpm](https://pnpm.io/) 9.
+**1. С GitHub, прямо на SteamOS-приставке.** Переключитесь в режим рабочего стола, откройте терминал (Konsole) и выполните:
 
-```bash
-pnpm install --frozen-lockfile
-pnpm run build        # создаёт dist/
-```
+    curl -fsSL https://raw.githubusercontent.com/MSPortnov/DualSenseDoctor/main/install.sh | bash
 
-Вспомогательные скрипты собирают и устанавливают плагин на машину с SteamOS:
+Скрипт скачивает последний релиз, проверяет его SHA-256 и ставит в `~/homebrew/plugins/DualSense Doctor`.
+В первый раз понадобится пароль пользователя `deck` (если не задавали, задайте командой `passwd`): его спросит `sudo`.
+Скрипт короткий, [прочитайте его](install.sh) перед запуском.
 
-- с Mac или Linux по SSH: `bash deploy.sh АДРЕС` (адрес запоминается в `~/.dsd_host`);
-- на самой машине с SteamOS: `bash update.sh`.
+**2. С GitHub, с другого компьютера (macOS или Linux).** Один раз на приставке включите SSH и посмотрите её IP-адрес:
 
-Оба скрипта сами ставят Node.js (в `~/.local/node`) и pnpm (в `~/.local/pnpm`), если их нет.
+    sudo systemctl enable --now sshd
+    ip -4 addr | grep inet
 
-Скрипты перезапускают Decky Loader, и Steam при этом перезагружает свой интерфейс. Если сразу после обновления магазин Steam откроется пустым, откройте его ещё раз: к плагину это не относится (то же бывает после `sudo systemctl restart plugin_loader`).
+Затем на своём компьютере (вместо `192.168.1.101` подставьте свой IP):
+
+    ssh -t deck@192.168.1.101 'curl -fsSL https://raw.githubusercontent.com/MSPortnov/DualSenseDoctor/main/install.sh | bash'
+
+**3. Через Decky, без терминала.** В Decky откройте Настройки > General и включите *Developer mode*. Затем откройте раздел
+*Developer*, выберите *Install Plugin from URL* и вставьте:
+
+    https://github.com/MSPortnov/DualSenseDoctor/releases/latest/download/DualSenseDoctor.zip
+
+Можно и скачать `DualSenseDoctor.zip` на странице [Releases](https://github.com/MSPortnov/DualSenseDoctor/releases)
+и выбрать в том же разделе *Install Plugin from ZIP*.
+
+**4. Из исходников.** Нужен компьютер с Mac или Linux и SSH-доступом к приставке (Node.js 18+ и
+[pnpm](https://pnpm.io/) 9 ставятся сами, если их нет):
+
+    git clone https://github.com/MSPortnov/DualSenseDoctor.git
+    bash DualSenseDoctor/deploy.sh 192.168.1.101
+
+Адрес запоминается в `~/.dsd_host`. Обновление: `cd DualSenseDoctor && git pull && bash deploy.sh`.
+Прямо на приставке то же делает `bash update.sh`. Оба скрипта собирают плагин
+(`pnpm install --frozen-lockfile`, `pnpm run build`) и устанавливают его; Node.js ставится в `~/.local/node`, pnpm в `~/.local/pnpm`.
+
+Установка и обновление перезапускают Decky Loader, и Steam при этом перезагружает свой интерфейс. Если сразу после
+обновления магазин Steam откроется пустым, откройте его ещё раз: к плагину это не относится (то же бывает после
+`sudo systemctl restart plugin_loader`).
 
 ## Зачем плагину root
 
@@ -76,6 +100,17 @@ bash deploy.sh АДРЕС logs    # логи Decky и плагина попад�
 ## Настройки
 
 Doctor работает без настройки. В разделе «Настройки Bluetooth» есть переключатели для каждого исправления (ранний connect и его задержка, ответ контроллеру, подхват Steam, запрет автосна адаптера, HCI-трасса). Язык («Авто» берёт язык Steam, English или Русский) выбирается внизу панели. Он действует на интерфейс, на собственные сообщения плагина (`events.log`, заметки в сеансах) и на отчёт Bluetooth, поэтому отчёт пишется на выбранном вами языке. Сообщения вспомогательных скриптов выводятся на языке системы.
+
+## Для разработчиков
+
+- Бэкенд: `main.py` (только стандартная библиотека Python, работает от root). Фронтенд: `src/` (React и TypeScript,
+  собирается командой `pnpm run build` в `dist/`).
+- Bluetooth-движок следит за контроллером через BlueZ (`dbus-monitor`, `bluetoothctl`), журнал ядра и HCI-трассу (`btmon`).
+- CI: `build.yml` собирает фронтенд и компилирует `main.py` при каждом пуше и pull request.
+- Релиз: поднимите версию в `package.json` **и** `VERSION` в `main.py`, добавьте запись в `CHANGELOG.md`, закоммитьте,
+  затем `git tag v1.2.3 && git push origin v1.2.3`. GitHub Actions соберёт плагин и приложит `DualSenseDoctor.zip`
+  (имя всегда такое, плюс файл `.sha256`) к новому релизу; сборка завершится ошибкой, если тег, `package.json` и `main.py` расходятся.
+- Коммитьте `pnpm-lock.yaml`: сборка использует `pnpm install --frozen-lockfile`.
 
 ## Лицензия
 
