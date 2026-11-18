@@ -35,7 +35,7 @@ DECKY_USER = _d("DECKY_USER", "deck")
 USER_HOME = _d("DECKY_USER_HOME", "/home/deck")
 log = decky.logger if decky else logging.getLogger("dsd")
 
-VERSION = "0.8.12"
+VERSION = "0.8.13"
 HID_DIR = "/sys/bus/hid/devices"
 HOT_CAP = 8000            # max. btmon lines per session
 NOHID_TIMEOUT = 25.0      # connected, but the HID device never appeared

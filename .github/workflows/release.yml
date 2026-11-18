@@ -43,7 +43,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p "out/DualSense Doctor"
-          cp -r dist main.py plugin.json package.json LICENSE README.md "out/DualSense Doctor/"
+          cp -r dist main.py plugin.json package.json LICENSE THIRD_PARTY_NOTICES.md README.md "out/DualSense Doctor/"
           (cd out && zip -qr ../DualSenseDoctor.zip "DualSense Doctor")
           sha256sum DualSenseDoctor.zip > DualSenseDoctor.zip.sha256
 

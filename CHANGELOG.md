@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.13
+- Preparation for the Decky plugin store: `THIRD_PARTY_NOTICES.md` (Font Awesome icon, react-icons, Decky libraries), a store image (`assets/store.png`) and the `image` field in `plugin.json`.
+- No functional changes in the plugin.
+
 ## 0.8.12
 - Installation from GitHub with one command (`install.sh`, checks the SHA-256 of the release), installation from Decky ("Install Plugin from URL") and from source are described in the README.
 - The release workflow checks that the tag, `package.json` and `main.py` have the same version and attaches a `.sha256` file to `DualSenseDoctor.zip`.

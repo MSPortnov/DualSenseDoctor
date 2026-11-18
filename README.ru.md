@@ -114,4 +114,4 @@ Doctor работает без настройки. В разделе «Наст�
 
 ## Лицензия
 
-Copyright (C) 2026 MSPortnov. Свободное программное обеспечение, распространяется по лицензии [GNU General Public License v3.0](LICENSE).
+Copyright (C) 2026 MSPortnov. Свободное программное обеспечение, распространяется по лицензии [GNU General Public License v3.0](LICENSE). Сторонние компоненты и авторство иконки: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -49,7 +49,7 @@ pnpm run build
 say ">> установка в $DEST" ">> installing to $DEST"
 sudo rm -rf "$DEST"
 sudo mkdir -p "$DEST/dist"
-sudo cp plugin.json package.json main.py LICENSE "$DEST/"
+sudo cp plugin.json package.json main.py LICENSE THIRD_PARTY_NOTICES.md "$DEST/"
 sudo cp -r dist/* "$DEST/dist/"
 sudo systemctl restart plugin_loader
 say ">> Готово. Quick Access Menu (кнопка ...) -> DualSense Doctor." ">> Done. Quick Access Menu (... button) -> DualSense Doctor."
