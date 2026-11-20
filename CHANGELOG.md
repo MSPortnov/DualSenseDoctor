@@ -1,13 +1,15 @@
 # Changelog
 
-## 0.8.13
-- Preparation for the Decky plugin store: `THIRD_PARTY_NOTICES.md` (Font Awesome icon, react-icons, Decky libraries), a store image (`assets/store.png`) and the `image` field in `plugin.json`.
-- No functional changes in the plugin.
+## 0.9.1
+- Fixed the HCI trace parser: it looked for the old btmon wording ("ACL Data RX"), but current btmon prints "> ACL: Handle ..." / "> BR-ACL: ...", so the lost request was never found and the answer always used the fallback values. It now reads the real format (checked on traces recorded on the test machine: the lost request is `ident=1`, PSM 1, source channel 64, received before the "Connect Complete" event). The same wording fix restores the filter that keeps the HID report stream out of the dumps.
+- Removed the tracking of how long a connection lasted: the "link held N s / link active" notes in the fix log, the `duration` and end time of a session, the `SHORT` result ("dropped after N s"), the disconnect-reason analysis and the `btmon_NNNN_END` dumps. A connection that ends before the check is finished is simply marked `ABORTED` (not a failure). The statistics are now counted per connection after sleep (`ok`, `fixed`, `failed`, `steam_rebind`, `avg_ttu`).
 
-## 0.8.12
-- Installation from GitHub with one command (`install.sh`, checks the SHA-256 of the release), installation from Decky ("Install Plugin from URL") and from source are described in the README.
-- The release workflow checks that the tag, `package.json` and `main.py` have the same version and attaches a `.sha256` file to `DualSenseDoctor.zip`.
-- No functional changes in the plugin.
+## 0.9.0
+- L2CAP answer without guessing: btmon is started automatically when logind announces sleep (`PrepareForSleep`, plus the kernel's "PM: suspend entry" as a second trigger) and stopped about 90 seconds after wake, so `ident` and the source channel id come from the real lost request. When the trace has no such request, the old defaults are used, marked "guessed" in `events.log` (`l2cap_params` in the session) and not counted as a fix. The request is lost about 2.5 s before the kernel prints "PM: suspend exit", so a trace started on resume would be too late.
+- The driver is detached for the Steam pickup only for connections after sleep, so a controller switched on at the desktop is not delayed.
+- Honest results: the preventive driver detach is no longer counted in `fixes_applied`, so a normal session stays `OK`; `FIXED` means something was actually corrected. The statistics got `steam_rebind` (how often a rebind was needed).
+- The fix log lists `SHORT` (dropped before the check) only for connections after sleep.
+- README: how the L2CAP parameters are found and why that part is fragile.
 
 ## 0.8.11
 - The focus pulse is once every 1.3 seconds (19 pulses, about 25 seconds).

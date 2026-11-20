@@ -1,7 +1,5 @@
 # DualSense Doctor
 
-[![build](https://github.com/MSPortnov/DualSenseDoctor/actions/workflows/build.yml/badge.svg)](https://github.com/MSPortnov/DualSenseDoctor/actions/workflows/build.yml) [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-
 **English** | [Русский](README.ru.md)
 
 A [Decky Loader](https://decky.xyz/) plugin for the DualSense controller on SteamOS. Two parts in one plugin:
@@ -9,7 +7,7 @@ A [Decky Loader](https://decky.xyz/) plugin for the DualSense controller on Stea
 1. **Lab** picks launch options for each game (Proton, `PROTON_*` variables, Steam Input) from a grid of cover art.
 2. **Doctor** fixes the Bluetooth connection after sleep when the controller wakes the PC.
 
-Tested with a DualSense Edge over Bluetooth on a SteamOS desktop PC. Other setups may behave differently, reports are welcome (see [Reporting a problem](#reporting-a-problem)).
+Tested with a DualSense and a DualSense Edge over Bluetooth on a SteamOS desktop PC. Other setups may behave differently, reports are welcome (see [Reporting a problem](#reporting-a-problem)).
 
 ## Lab: launch options per game
 
@@ -30,51 +28,29 @@ What the plugin does (all of it works without configuration):
 - **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for about 5 seconds, so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice.
 - Optionally keeps the Bluetooth adapter from autosuspending, and records an HCI trace (btmon) for diagnostics.
 
+How the L2CAP answer finds its parameters: the lost request (its `ident` and source channel id) is read from an HCI trace. btmon is started automatically shortly before the PC goes to sleep (when logind announces it) and stopped about 90 seconds after wake, so there is no constant load. If the trace does not contain the request, the plugin falls back to the values the first request of a fresh connection normally has (`ident=1`, `scid=64`); such a response is marked "guessed" in `events.log` and is not counted as a fix. In every trace recorded during testing the lost request was `ident=1`, PSM 1, source channel 64, so these fallback values match what the controller really sends. This part sends a raw ACL packet through an HCI socket as root, so it is fragile by nature: it was tested with a DualSense and a DualSense Edge, but on one machine only, and other controllers or Bluetooth stacks may need different values.
+
 Known limitation: because of the pickup step the controller becomes usable about 5 to 6 seconds after wake, so buttons pressed earlier are ignored.
 
-## Installing and updating
+## Installation
 
-Four ways, pick the one that suits you. The same command (or the same ZIP) installs the plugin and updates it later,
-and settings are kept because they are stored outside the plugin folder.
+**From a release (needs Decky developer mode):** download `DualSenseDoctor.zip` from the [Releases](https://github.com/MSPortnov/DualSenseDoctor/releases) page, then in Decky enable developer mode and choose "Install plugin from ZIP".
 
-**1. From GitHub, on the SteamOS machine itself.** Switch to Desktop Mode, open a terminal (Konsole) and run:
+**From source:** needs Node.js 18+ and [pnpm](https://pnpm.io/) 9.
 
-    curl -fsSL https://raw.githubusercontent.com/MSPortnov/DualSenseDoctor/main/install.sh | bash
+```bash
+pnpm install --frozen-lockfile
+pnpm run build        # creates dist/
+```
 
-It downloads the latest release, checks its SHA-256 and installs it into `~/homebrew/plugins/DualSense Doctor`.
-The first time you need a password for the `deck` user (set it with `passwd` if you never did): `sudo` asks for it.
-The script is short, [read it here](install.sh) before you run it.
+Helper scripts build and install the plugin on a SteamOS machine:
 
-**2. From GitHub, from another computer (macOS or Linux).** One time, on the SteamOS machine, turn SSH on and note its IP address:
+- from a Mac or Linux computer over SSH: `bash deploy.sh ADDRESS` (the address is remembered in `~/.dsd_host`);
+- on the SteamOS machine itself: `bash update.sh`.
 
-    sudo systemctl enable --now sshd
-    ip -4 addr | grep inet
+Both scripts install Node.js (into `~/.local/node`) and pnpm (into `~/.local/pnpm`) if they are missing.
 
-Then, on your computer (put your IP address instead of `192.168.1.101`):
-
-    ssh -t deck@192.168.1.101 'curl -fsSL https://raw.githubusercontent.com/MSPortnov/DualSenseDoctor/main/install.sh | bash'
-
-**3. Through Decky, without a terminal.** In Decky open Settings > General and turn on *Developer mode*. Then open
-*Developer*, choose *Install Plugin from URL* and paste:
-
-    https://github.com/MSPortnov/DualSenseDoctor/releases/latest/download/DualSenseDoctor.zip
-
-You can also download `DualSenseDoctor.zip` from the [Releases](https://github.com/MSPortnov/DualSenseDoctor/releases)
-page and choose *Install Plugin from ZIP* in the same section.
-
-**4. From source.** Needs a Mac or Linux computer with SSH access to the SteamOS machine (Node.js 18+ and
-[pnpm](https://pnpm.io/) 9 are installed automatically if missing):
-
-    git clone https://github.com/MSPortnov/DualSenseDoctor.git
-    bash DualSenseDoctor/deploy.sh 192.168.1.101
-
-The address is remembered in `~/.dsd_host`. To update: `cd DualSenseDoctor && git pull && bash deploy.sh`.
-Directly on the SteamOS machine the same is done by `bash update.sh`. Both scripts build the plugin
-(`pnpm install --frozen-lockfile`, `pnpm run build`) and install it; Node.js goes into `~/.local/node` and pnpm into `~/.local/pnpm`.
-
-Installing or updating restarts Decky Loader, and Steam reloads its interface when that happens. If the Steam Store
-opens blank right after an update, open it once more; this is not related to the plugin (it also happens after
-`sudo systemctl restart plugin_loader`).
+The scripts restart Decky Loader, and Steam reloads its interface when that happens. If the Steam Store opens blank right after an update, open it once more; this is not related to the plugin (it also happens after `sudo systemctl restart plugin_loader`).
 
 ## Why the plugin runs as root
 
@@ -82,7 +58,7 @@ opens blank right after an update, open it once more; this is not related to the
 
 - writing to `/sys` to detach and re-attach the HID driver (`unbind` / `bind`) and to turn off USB autosuspend of the Bluetooth adapter;
 - opening a raw HCI socket to send the L2CAP response;
-- running `btmon` for the optional HCI trace.
+- running `btmon`: automatically around sleep (for the L2CAP answer) and, if you switch it on, for the HCI trace.
 
 Lab alone would not need it. Nothing is downloaded or sent anywhere, and all changes are listed above.
 
@@ -101,17 +77,6 @@ The report contains system logs and Bluetooth device addresses, so look through 
 
 Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect and its delay, answer to the controller, Steam pickup, no adapter autosuspend, HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
 
-## For developers
-
-- Backend: `main.py` (Python standard library only, runs as root). Frontend: `src/` (React and TypeScript, built with
-  `pnpm run build` into `dist/`).
-- The Bluetooth engine follows the controller through BlueZ (`dbus-monitor`, `bluetoothctl`), the kernel log and an HCI trace (`btmon`).
-- CI: `build.yml` builds the frontend and compiles `main.py` on every push and pull request.
-- Release: raise the version in `package.json` **and** `VERSION` in `main.py`, add a line to `CHANGELOG.md`, commit,
-  then `git tag v1.2.3 && git push origin v1.2.3`. GitHub Actions builds the plugin and attaches `DualSenseDoctor.zip`
-  (always this name, plus a `.sha256` file) to a new release; the build fails if the tag, `package.json` and `main.py` differ.
-- Commit `pnpm-lock.yaml`: the build uses `pnpm install --frozen-lockfile`.
-
 ## License
 
-Copyright (C) 2026 MSPortnov. This program is free software, licensed under the [GNU General Public License v3.0](LICENSE). Third-party components and icon credits: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Copyright (C) 2026 MSPortnov. This program is free software, licensed under the [GNU General Public License v3.0](LICENSE).

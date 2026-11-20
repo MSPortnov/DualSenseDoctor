@@ -105,7 +105,6 @@ type LogEntry = {
   iso: string;
   result: string;
   t_hid: number | null;
-  duration: number | null;
   fixes_applied: string[];
   unknown_handle: number;
   after_resume: boolean;
@@ -128,7 +127,6 @@ const FOCUS: any = { focusable: true };
 
 const STATUS_COLOR: Record<string, string> = {
   FIXED: "#9ccc65",
-  SHORT: "#ef5350",
   NOHID: "#ef5350",
   NOGYRO: "#ffb74d",
   NOSTEAM: "#ffb74d",
@@ -150,11 +148,10 @@ function describe(x: LogEntry): string {
       parts.push(x.t_hid !== null ? t("bt.d.earlyHid", { n: x.t_hid }) : t("bt.d.early"));
     }
     if (x.fixes_applied.includes("l2cap_answer")) parts.push(t("bt.d.answer"));
-    parts.push(x.duration !== null ? t("bt.d.held", { n: x.duration }) : t("bt.d.active"));
     return parts.join("; ");
   }
   if (x.result === "NOSTEAM") return t("bt.d.steamWrong");
-  return x.duration !== null ? t("bt.d.droppedAfter", { n: x.duration }) : t("bt.d.notEstablished");
+  return t("bt.d.notEstablished");
 }
 
 function LogRow({ x }: { x: LogEntry }) {

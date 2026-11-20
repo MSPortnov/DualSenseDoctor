@@ -35,11 +35,10 @@ DECKY_USER = _d("DECKY_USER", "deck")
 USER_HOME = _d("DECKY_USER_HOME", "/home/deck")
 log = decky.logger if decky else logging.getLogger("dsd")
 
-VERSION = "0.8.13"
+VERSION = "0.9.1"
 HID_DIR = "/sys/bus/hid/devices"
 HOT_CAP = 8000            # max. btmon lines per session
 NOHID_TIMEOUT = 25.0      # connected, but the HID device never appeared
-EPISODE_GAP = 45.0        # sessions closer together than this are one wake "episode"
 RESUME_WINDOW = 40.0      # a connection within N s after resume counts as "after sleep"
 MAX_SESSIONS = 300
 MAX_BTMON_FILES = 40
@@ -47,6 +46,9 @@ MAX_BTMON_FILES = 40
 # after wake, while it is still busy itself. The HID device is needed right away (otherwise the PC drops the link at the 4th second), so it is created
 # early, but its driver is detached for that time: the /dev/hidrawN and input nodes disappear while the link stays. The driver is restored
 # STEAM_BIND_AT seconds after the connection, when Steam is calm: it sees the controller for the first time and opens it the right way.
+# On-demand HCI trace (btmon) for the L2CAP answer: started shortly before sleep, stopped after wake.
+BTMON_AFTER_RESUME_S = 90  # how long the trace keeps running after wake
+BTMON_ARM_MAX_S = 300      # ... and at most this long when the sleep never happens
 STEAM_HOLD = True
 STEAM_HOLD_DELAY = 0.15   # pause after HID appears before the driver is detached, s
 STEAM_BIND_AT = 5.0       # when to restore the driver (seconds after connection)
@@ -82,7 +84,10 @@ DEFAULTS = {
 }
 RANGES = {"early_connect_delay": (0.3, 3.5)}
 
-NOISE_RE = re.compile(r"ACL Data (RX|TX)|Number of Completed|Num handles|^\s+Count:|Latency:|#\d+: len|Channel: \d+ len")
+# btmon prints a received packet as "> ACL: Handle 256 ..." (before the link type is known) or "> BR-ACL: ...", a sent one with "<"
+ACL_RX_RE = re.compile(r"^\s*>\s+(?:BR-|LE-)?ACL\b")
+ACL_TX_RE = re.compile(r"^\s*<\s+(?:BR-|LE-)?ACL\b")
+NOISE_RE = re.compile(r"^\s*[<>]\s+(?:BR-|LE-)?ACL\b|Number of Completed|Num handles|^\s+Count:|Latency:|#\d+: len|Channel: \d+ len")
 HEX_RE = re.compile(r"^\s+[0-9a-f]{2}( [0-9a-f]{2}){3,}")
 INJECT_SCRIPT = r"""
 import socket, struct, sys
@@ -609,7 +614,6 @@ class Store:
         except Exception:
             self.sessions = []
         self.next_id = max([s.get("id", 0) for s in self.sessions] + [0]) + 1
-        self.next_ep = max([s.get("ep", 0) for s in self.sessions] + [0]) + 1
 
     def save_settings(self):
         try:
@@ -650,13 +654,12 @@ class Engine:
         self.sessions = self.store.sessions
         self.ctrl = {}
         self.cur = {}
-        self.ep = None
         self.hot = {}
         self.btmon_ring = collections.deque(maxlen=30000)
-        self._disc_ctx = None
-        self._disc_n = 0
-        self.last_acl_rx = 0.0
-        self.last_rx_by_handle = {}
+        self.btmon_demand = False   # btmon was started by the plugin (not by the "HCI trace" switch)
+        self.btmon_arm_until = 0.0
+        self._login1 = False
+        self.dbus_parser = None
         self.recent = collections.deque(maxlen=500)
         self.unknown_handle_ts = collections.deque(maxlen=50)
         self.last_resume_ts = None
@@ -689,12 +692,13 @@ class Engine:
             "bluez", ["journalctl", "-u", "bluetooth", "-f", "-n", "0", "--no-pager", "-o", "short-iso-precise"],
             self.on_bluez_line)
         if which("dbus-monitor"):
-            parser = DbusParser(lambda p, k, v: self.q.put_nowait(("prop", (p, k, v))))
+            self.dbus_parser = DbusParser(lambda p, k, v: self.q.put_nowait(("prop", (p, k, v))))
             self.streams["dbus"] = LineStream(
                 "dbus", ["dbus-monitor", "--system",
                          "type='signal',interface='org.freedesktop.DBus.Properties',"
-                         "member='PropertiesChanged',path_namespace='/org/bluez'"],
-                parser.feed, use_pty=True)
+                         "member='PropertiesChanged',path_namespace='/org/bluez'",
+                         "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'"],
+                self.feed_dbus, use_pty=True)
         else:
             self.dbus_missing = True
             self.elog("WARN", tr("dbus-monitor не найден, использую опрос bluetoothctl раз в секунду", "dbus-monitor not found, polling bluetoothctl once a second"))
@@ -715,8 +719,40 @@ class Engine:
     def elog(self, kind, msg):
         self.store.elog(kind, msg)
 
+    def feed_dbus(self, line):
+        """Lines of dbus-monitor: the Bluetooth parser gets everything except logind's sleep signal, which arms the HCI trace."""
+        if line and not line[0].isspace():  # a new D-Bus message starts
+            self._login1 = line.startswith("signal ") and "member=PrepareForSleep" in line
+            if self._login1:
+                return
+        elif self._login1:
+            if "boolean true" in line:
+                self.arm_btmon("PrepareForSleep")
+            return
+        if self.dbus_parser:
+            self.dbus_parser.feed(line)
+
+    def arm_btmon(self, why):
+        """Start btmon shortly before sleep. The controller's request that the kernel drops arrives about 2.5 s BEFORE the
+        kernel prints "PM: suspend exit", so a trace started on resume would be too late: it has to be running already."""
+        if not self.cfg["l2cap_answer"] or not which("btmon"):
+            return
+        self.btmon_arm_until = time.time() + BTMON_ARM_MAX_S
+        if "btmon" in self.streams:
+            return
+        self.btmon_demand = True
+        self.update_btmon()
+        self.elog("HCI", tr("трасса btmon включена перед сном (%s)", "btmon trace started before sleep (%s)") % why)
+
+    def disarm_btmon(self):
+        if not self.btmon_demand:
+            return
+        self.btmon_demand = False
+        self.update_btmon()
+        self.elog("HCI", tr("трасса btmon остановлена", "btmon trace stopped"))
+
     def update_btmon(self):
-        want = bool(self.cfg["btmon"]) and bool(which("btmon"))
+        want = (bool(self.cfg["btmon"]) or self.btmon_demand) and bool(which("btmon"))
         st = self.streams.get("btmon")
         if want and not st:
             st = LineStream("btmon", ["btmon"], self.on_btmon_line, use_pty=True)
@@ -761,6 +797,8 @@ class Engine:
 
     # ------------------------------------------------------------ stream handlers
     def on_kernel_line(self, line):
+        if "PM: suspend entry" in line:
+            self.arm_btmon("PM: suspend entry")
         if not KERN_RE.search(line):
             return
         now = time.time()
@@ -782,26 +820,6 @@ class Engine:
         if HEX_RE.match(line):
             return
         ts = time.time()
-        if "> ACL Data RX" in line:
-            self.last_acl_rx = ts
-            mh = re.search(r"Handle (\d+)", line)
-            if mh:
-                self.last_rx_by_handle[int(mh.group(1))] = ts
-        if "HCI Command: Disconnect" in line:
-            self._disc_ctx, self._disc_n = "host-cmd", 0
-        elif "HCI Event: Disconnect Complete" in line:
-            self._disc_ctx, self._disc_n = "event", 0
-        elif self._disc_ctx:
-            self._disc_n += 1
-            m = re.search(r"Reason: (.+)", line)
-            if m:
-                tag, self._disc_ctx = self._disc_ctx, None
-                cs = next(iter(self.cur.values()), None) or (self.sessions[-1] if self.sessions else None)
-                if cs is not None:
-                    cs.setdefault("hci_disc", []).append(tr("%s: %s @+%.1fs (тишина от контроллера %.1fс)", "%s: %s @+%.1fs (silence from the controller %.1fs)") % (
-                        tag, m.group(1).strip(), ts - cs["t0"], (ts - self.last_acl_rx) if self.last_acl_rx else -1))
-            elif self._disc_n > 8:
-                self._disc_ctx = None
         self.btmon_ring.append((ts, line))
         for buf in self.hot.values():
             if len(buf) < HOT_CAP:
@@ -835,6 +853,8 @@ class Engine:
 
     def on_resume(self, now, slept):
         self.last_resume_ts = now
+        if self.btmon_demand:
+            self.btmon_arm_until = now + BTMON_AFTER_RESUME_S
         new = self.read_wakeup()
         srcs = []
         for k, (name, dev, ev, wk) in new.items():
@@ -853,6 +873,8 @@ class Engine:
             try:
                 self.check_resume()
                 self.wake_snap = self.read_wakeup()
+                if self.btmon_demand and time.time() > self.btmon_arm_until:
+                    self.disarm_btmon()
                 if self.dbus_missing:
                     await self._poll_conn()
             except asyncio.CancelledError:
@@ -936,12 +958,6 @@ class Engine:
         now = time.time()
         since = (now - self.last_resume_ts) if self.last_resume_ts else None
         after = since is not None and 0 <= since <= RESUME_WINDOW
-        if (self.ep is None or now - self.ep["t_last"] > EPISODE_GAP
-                or (after and self.ep.get("resume") != self.last_resume_ts)):
-            self.ep = {"id": self.store.next_ep, "t_last": now,
-                       "resume": self.last_resume_ts if after else None}
-            self.store.next_ep += 1
-        self.ep["t_last"] = now
         sid = self.store.next_id
         self.store.next_id += 1
         usb_pm = self.ensure_adapter_awake(tr("подключение", "connection"))
@@ -949,13 +965,13 @@ class Engine:
             usb_pm = read(self.adapter_pm_path()).strip() if os.path.exists("/sys/class/bluetooth") else None
         s = {
             "usb_pm_before": usb_pm,
-            "id": sid, "ep": self.ep["id"], "mac": mac, "name": self.ctrl[mac]["name"],
+            "id": sid, "mac": mac, "name": self.ctrl[mac]["name"],
             "t0": now, "iso": iso(now), "result": "RUNNING", "profile": self.profile(),
             "after_resume": after, "since_resume_s": round(since, 2) if after else None,
             "wake_sources": self.last_wake_sources if after else [],
             "slept_s": round(self.last_slept) if after else None,
             "unknown_handle": sum(1 for t in self.unknown_handle_ts if now - 15 <= t <= now + 1),
-            "t_hid": None, "t_usable": None, "duration": None, "problems": [],
+            "t_hid": None, "t_usable": None, "problems": [],
             "fixes_applied": [], "events": [], "steam_path": None,
             "_mono": time.monotonic(),
             "_steam_marks": steam_log_marks(),
@@ -1033,7 +1049,6 @@ class Engine:
             result = "NOSTEAM"
         s["result"] = result
         s["t_final"] = round(now - s["t0"], 2)
-        s["t_end"] = now
         if note:
             s["note"] = note
         self.ev(s, "RESULT %s %s" % (result, note))
@@ -1058,28 +1073,30 @@ class Engine:
         return hs[0] if len(hs) == 1 else None
 
     def find_lost_sdp_request(self, since):
-        """From the HCI trace: the controller's SDP request (PSM 1) that the kernel dropped. Returns (ident, scid)."""
+        """From the HCI trace: the controller's SDP request (PSM 1) that the kernel dropped.
+        Returns (ident, scid, "trace"), or the usual first-request values (1, 64, "guess") when the trace has no such request."""
         direction, ident, psm, scid = None, None, None, None
         for ts, line in self.btmon_ring:
             if ts < since:
                 continue
-            if "ACL Data RX" in line:
-                direction = "rx"
-            elif "ACL Data TX" in line:
-                direction = "tx"
+            if line.lstrip()[:1] in (">", "<", "@", "="):  # a new packet or event starts: remember its direction
+                direction = "rx" if ACL_RX_RE.match(line) else "tx" if ACL_TX_RE.match(line) else None
             m = re.search(r"L2CAP: Connection Request \(0x02\) ident (\d+)", line)
-            if m and direction == "rx":
+            if m:
                 ident, psm, scid = int(m.group(1)), None, None
-            elif ident is not None:
+                continue
+            if ident is not None:
                 mp = re.search(r"PSM: (\d+)", line)
-                mc = re.search(r"Source CID: (\d+)", line)
                 if mp:
                     psm = int(mp.group(1))
-                if mc:
-                    scid = int(mc.group(1))
+                ms = re.search(r"Source CID: (\d+)", line)
+                if ms:
+                    scid = int(ms.group(1))
                 if psm == 1 and scid is not None:
-                    return ident, scid
-        return 1, 64
+                    if direction == "rx":
+                        return ident, scid, "trace"
+                    ident, psm, scid = None, None, None  # our own request (TX): not the lost one
+        return 1, 64, "guess"
 
     async def _post_final(self, s):
         try:
@@ -1098,34 +1115,12 @@ class Engine:
         s = self.cur.pop(mac, None)
         if not s:
             return
-        now = time.time()
-        s["duration"] = round(now - s["t0"], 2)
-        s["t_end"] = now
-        self.ev(s, "DISCONNECTED duration=%.1fs" % s["duration"])
-        if self.ep:
-            self.ep["t_last"] = now
-        was_running = s["result"] == "RUNNING"
-        if was_running:
-            self.finalize(s, "SHORT", tr("обрыв через %.1fс, HID=%s", "dropped after %.1fs, HID=%s") % (s["duration"], s["t_hid"]))
+        self.ev(s, "DISCONNECTED")
+        if s["result"] == "RUNNING":
+            # the controller left before the check was finished (switched off, or the PC went to sleep): no verdict
+            s["result"] = "ABORTED"
+            self.hot.pop(s["id"], None)
         self.store.save_sessions()
-        if not was_running and s["duration"] > 10:
-            asyncio.ensure_future(self._dump_end(s))
-
-    async def _dump_end(self, s):
-        try:
-            end = s["t_end"]
-            await asyncio.sleep(2.0)
-            lines = [(t, l) for (t, l) in self.btmon_ring if end - 10 <= t <= end + 2 and not NOISE_RE.search(l)][-1500:]
-            if not lines:
-                return
-            path = os.path.join(DATA_DIR, "btmon_%04d_END.txt" % s["id"])
-            with open(path, "w") as f:
-                f.write(tr("# session %d END (10с до и 2с после разрыва, без потока HID-отчётов) duration=%s hci_disc=%s\n", "# session %d END (10 s before and 2 s after the drop, without the HID report stream) duration=%s hci_disc=%s\n") % (
-                    s["id"], s["duration"], s.get("hci_disc")))
-                for ts, line in lines:
-                    f.write("%s %s\n" % (datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S.%f")[:-3], line))
-        except Exception as e:
-            log.error("dump_end: %s", e)
 
     # ------------------------------------------------------------ actions
     async def _hold_hid(self, s, hid):
@@ -1138,10 +1133,11 @@ class Engine:
             await asyncio.sleep(STEAM_HOLD_DELAY)
             if self.cur.get(mac) is not s or not cfg["steam_pickup"]:
                 return
+            if not s.get("after_resume"):
+                return  # a controller switched on at the desktop is not delayed: Steam is not busy waking up
             if not await loop.run_in_executor(None, steam_running):
                 return
-            if "steam_pickup" not in s["fixes_applied"]:
-                s["fixes_applied"].append("steam_pickup")
+            s["steam_hold"] = True  # a preventive step, not a fix: it is not counted in fixes_applied
             async with self.action_lock:
                 unbound, steps = await loop.run_in_executor(None, sync_unbind, hid)
             self.ev(s, tr("драйвер отключён, пока Steam занят после пробуждения: %s", "driver detached while Steam is busy after wake: %s") % "; ".join(steps))
@@ -1270,19 +1266,23 @@ class Engine:
             if handle is None:
                 self.ev(s, tr("L2CAP: handle соединения не найден", "L2CAP: connection handle not found"))
                 return
-            ident, scid = self.find_lost_sdp_request(s["t0"] - 8)
+            ident, scid, src = self.find_lost_sdp_request(s["t0"] - 8)
+            s["l2cap_params"] = src
             dev = int(re.sub(r"\D", "", first_hci()) or 0)
-            if "l2cap_answer" not in s["fixes_applied"]:
-                s["fixes_applied"].append("l2cap_answer")
             n = 0
             while alive() and (not L2CAP_MAX_SENDS or n < L2CAP_MAX_SENDS):
                 rc, out = await run(["python3", "-c", INJECT_SCRIPT, str(dev), str(handle), "1",
                                      str(ident), str(scid)], 6)
                 if L2CAP_MAX_SENDS or n == 0 or rc != 0 or n % 20 == 0:
-                    self.ev(s, "L2CAP pending #%d handle=%d ident=%d scid=%d rc=%s %s" % (
-                        n + 1, handle, ident, scid, rc, out.strip()[:120]))
+                    self.ev(s, "L2CAP pending #%d handle=%d ident=%d scid=%d (%s) rc=%s %s" % (
+                        n + 1, handle, ident, scid,
+                        tr("из трассы", "from the trace") if src == "trace" else tr("угадано: в трассе запроса нет", "guessed: no request in the trace"),
+                        rc, out.strip()[:120]))
                 if rc != 0:
                     return
+                # only a response built from the real request counts as a fix: a guessed one cannot be checked
+                if n == 0 and src == "trace" and "l2cap_answer" not in s["fixes_applied"]:
+                    s["fixes_applied"].append("l2cap_answer")
                 n += 1
                 if L2CAP_MAX_SENDS and n >= L2CAP_MAX_SENDS:
                     break
@@ -1375,34 +1375,25 @@ class Engine:
             log.error("dump_btmon: %s", e)
 
     def compute_stats(self):
-        sess = sorted([s for s in self.sessions if s.get("result") != "RUNNING"], key=lambda x: x["t0"])
-        eps = []
-        for s in sess:
-            end = s.get("t_end") or s["t0"]
-            if eps and s["t0"] - eps[-1]["t_end"] <= EPISODE_GAP:
-                eps[-1]["s"].append(s)
-                eps[-1]["t_end"] = max(eps[-1]["t_end"], end)
-            else:
-                eps.append({"s": [s], "t0": s["t0"], "t_end": end})
+        """Per settings profile, how the connections after sleep ended: OK = nothing was needed, FIXED = something was
+        actually corrected, the rest are failures. steam_rebind = how often a rebind was needed."""
         stats = {}
-        for e in eps:
-            first = e["s"][0]
-            if not first.get("after_resume"):
+        for s in self.sessions:
+            r = s.get("result")
+            if not s.get("after_resume") or r in ("RUNNING", "ABORTED"):
                 continue
-            p = stats.setdefault(first["profile"], {"n": 0, "ok_first": 0, "fixed": 0,
-                                                    "recovered": 0, "failed": 0, "_ttu": []})
+            p = stats.setdefault(s["profile"], {"n": 0, "ok": 0, "fixed": 0, "failed": 0, "steam_rebind": 0, "_ttu": []})
             p["n"] += 1
-            usable = next((x for x in e["s"] if x["result"] in ("OK", "FIXED")), None)
-            if first["result"] == "OK":
-                p["ok_first"] += 1
-            elif first["result"] == "FIXED":
+            if "steam_pickup" in s.get("fixes_applied", []):
+                p["steam_rebind"] += 1
+            if r == "OK":
+                p["ok"] += 1
+            elif r == "FIXED":
                 p["fixed"] += 1
-            elif usable:
-                p["recovered"] += 1
             else:
                 p["failed"] += 1
-            if usable and usable.get("t_usable") is not None:
-                p["_ttu"].append(usable["t0"] + usable["t_usable"] - e["t0"])
+            if r in ("OK", "FIXED") and s.get("t_usable") is not None:
+                p["_ttu"].append(s["t_usable"])
         for p in stats.values():
             t = p.pop("_ttu")
             p["avg_ttu"] = round(sum(t) / len(t), 1) if t else None
@@ -1413,8 +1404,8 @@ class Engine:
         out = []
         for s in reversed(self.sessions):
             r = s.get("result")
-            if (r == "FIXED" and s.get("fixes_applied")) or r in ("SHORT", "NOHID", "NOGYRO", "NOSTEAM"):
-                out.append({k: s.get(k) for k in ("id", "iso", "result", "t_hid", "duration",
+            if (r == "FIXED" and s.get("fixes_applied")) or r in ("NOHID", "NOGYRO", "NOSTEAM"):
+                out.append({k: s.get(k) for k in ("id", "iso", "result", "t_hid",
                                                   "fixes_applied", "unknown_handle", "after_resume")})
             if len(out) >= limit:
                 break

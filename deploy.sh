@@ -70,10 +70,10 @@ echo ">> pnpm run build"; pnpm run build
 
 say ">> отправка файлов" ">> copying files"
 ssh $SSHO "$TARGET" 'rm -rf /tmp/dsd-deploy && mkdir -p /tmp/dsd-deploy'
-rsync -az -e "ssh $SSHO" plugin.json package.json main.py LICENSE THIRD_PARTY_NOTICES.md dist "$TARGET:/tmp/dsd-deploy/"
+rsync -az -e "ssh $SSHO" plugin.json package.json main.py LICENSE dist "$TARGET:/tmp/dsd-deploy/"
 
 say ">> установка (спросит пароль sudo на ПК)" ">> installing (asks for the sudo password on the PC)"
-ssh -t $SSHO "$TARGET" 'D="$HOME/homebrew/plugins/DualSense Doctor"; sudo rm -rf "$D" && sudo mkdir -p "$D/dist" && sudo cp /tmp/dsd-deploy/plugin.json /tmp/dsd-deploy/package.json /tmp/dsd-deploy/main.py /tmp/dsd-deploy/LICENSE /tmp/dsd-deploy/THIRD_PARTY_NOTICES.md "$D/" && sudo cp -r /tmp/dsd-deploy/dist/* "$D/dist/" && sudo systemctl restart plugin_loader && echo OK'
+ssh -t $SSHO "$TARGET" 'D="$HOME/homebrew/plugins/DualSense Doctor"; sudo rm -rf "$D" && sudo mkdir -p "$D/dist" && sudo cp /tmp/dsd-deploy/plugin.json /tmp/dsd-deploy/package.json /tmp/dsd-deploy/main.py /tmp/dsd-deploy/LICENSE "$D/" && sudo cp -r /tmp/dsd-deploy/dist/* "$D/dist/" && sudo systemctl restart plugin_loader && echo OK'
 echo "$HOST" > "$HOME/.dsd_host"
 say ">> Готово. Quick Access Menu (кнопка ...) -> DualSense Doctor." ">> Done. Quick Access Menu (... button) -> DualSense Doctor."
 say ">> Если сразу после обновления магазин Steam откроется пустым, откройте его ещё раз: это Steam перезагружает интерфейс после перезапуска Decky, к плагину не относится." ">> If the Steam Store opens blank right after an update, open it once more: Steam reloads its interface after Decky restarts, it is not related to the plugin."
