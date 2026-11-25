@@ -35,7 +35,7 @@ DECKY_USER = _d("DECKY_USER", "deck")
 USER_HOME = _d("DECKY_USER_HOME", "/home/deck")
 log = decky.logger if decky else logging.getLogger("dsd")
 
-VERSION = "0.9.1"
+VERSION = "0.9.3"
 HID_DIR = "/sys/bus/hid/devices"
 HOT_CAP = 8000            # max. btmon lines per session
 NOHID_TIMEOUT = 25.0      # connected, but the HID device never appeared
@@ -45,13 +45,14 @@ MAX_BTMON_FILES = 40
 # Steam opens the controller the wrong way (A and B swapped, default lightbar) if it first sees it in the first seconds
 # after wake, while it is still busy itself. The HID device is needed right away (otherwise the PC drops the link at the 4th second), so it is created
 # early, but its driver is detached for that time: the /dev/hidrawN and input nodes disappear while the link stays. The driver is restored
-# STEAM_BIND_AT seconds after the connection, when Steam is calm: it sees the controller for the first time and opens it the right way.
+# steam_bind_at seconds after the connection (setting, 5 by default), when Steam is calm: it sees the controller for the first time and opens it the right way.
 # On-demand HCI trace (btmon) for the L2CAP answer: started shortly before sleep, stopped after wake.
 BTMON_AFTER_RESUME_S = 90  # how long the trace keeps running after wake
 BTMON_ARM_MAX_S = 300      # ... and at most this long when the sleep never happens
+EARLY_CONNECT_DELAY = 0.3  # seconds after the connection before the plugin opens the HID channel itself
 STEAM_HOLD = True
 STEAM_HOLD_DELAY = 0.15   # pause after HID appears before the driver is detached, s
-STEAM_BIND_AT = 5.0       # when to restore the driver (seconds after connection)
+STEAM_BIND_MIN_HOLD = 0.5  # the driver stays detached at least this long, s (when to restore it: the "steam_bind_at" setting)
 STEAM_BIND_SETTLE = 1.2   # how long to wait after the driver is restored before checking HID, s
 STEAM_PATH_WAIT = 4.0     # how long to wait for Steam's log entry about how it opened the controller
 STEAM_WAIT = 8.0          # how long to wait for Steam to notice the controller before doing a rebind
@@ -73,16 +74,18 @@ def tr(ru, en):
     return ru if LANG == "ru" else en
 
 
+RANGES = {"steam_bind_at": (2.0, 6.0)}
+
+
 DEFAULTS = {
     "lang": "en",
     "early_connect": True,
-    "early_connect_delay": 1.0,
     "l2cap_answer": True,
     "steam_pickup": True,
+    "steam_bind_at": 5.0,
     "no_autosuspend": True,
     "btmon": False,
 }
-RANGES = {"early_connect_delay": (0.3, 3.5)}
 
 # btmon prints a received packet as "> ACL: Handle 256 ..." (before the link type is known) or "> BR-ACL: ...", a sent one with "<"
 ACL_RX_RE = re.compile(r"^\s*>\s+(?:BR-|LE-)?ACL\b")
@@ -767,12 +770,10 @@ class Engine:
         fx = []
         for k in FIX_KEYS:
             if c[k]:
-                if k == "early_connect":
-                    k += "@%g" % c["early_connect_delay"]
-                elif k == "l2cap_answer":
+                if k == "l2cap_answer":
                     k += "@pending"
                 elif k == "steam_pickup":
-                    k += "@%g" % STEAM_WAIT
+                    k += "@%g" % c["steam_bind_at"]  # the value is part of the profile, so the statistics are kept per value
                 fx.append(k)
         return "+".join(fx) or "none"
 
@@ -991,7 +992,7 @@ class Engine:
         next_check = None
         ec_count = 0
         ec_task = None
-        next_ec = cfg["early_connect_delay"]
+        next_ec = EARLY_CONNECT_DELAY
         try:
             while s["result"] == "RUNNING":
                 await asyncio.sleep(0.2)
@@ -1125,7 +1126,7 @@ class Engine:
     # ------------------------------------------------------------ actions
     async def _hold_hid(self, s, hid):
         """Hides the controller from Steam while Steam is busy after wake (see STEAM_HOLD) and restores the driver at
-        STEAM_BIND_AT. The driver is restored in every case, even if the session dropped or an error occurred."""
+        the "steam_bind_at" setting. The driver is restored in every case, even if the session dropped or an error occurred."""
         cfg, mac = self.cfg, s["mac"]
         loop = asyncio.get_running_loop()
         unbound = False
@@ -1144,7 +1145,8 @@ class Engine:
             if not unbound:
                 return
             s["_hold"] = True
-            while self.cur.get(mac) is s and time.monotonic() - s["_mono"] < STEAM_BIND_AT:
+            release_at = max(cfg["steam_bind_at"], time.monotonic() - s["_mono"] + STEAM_BIND_MIN_HOLD)
+            while self.cur.get(mac) is s and time.monotonic() - s["_mono"] < release_at:
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -1335,11 +1337,11 @@ class Engine:
         d = DEFAULTS[key]
         if isinstance(d, bool):
             value = bool(value)
-        else:
+        elif key in RANGES:
             lo, hi = RANGES[key]
             value = min(max(float(value), lo), hi)
-            if isinstance(d, int):
-                value = int(round(value))
+        else:
+            return self.public_settings()  # the language has its own call
         self.cfg[key] = value
         self.elog("SETTING", "%s=%s" % (key, value))
         self.store.save_settings()

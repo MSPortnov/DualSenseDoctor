@@ -23,14 +23,14 @@ The problem: when the PC wakes up the kernel drops the controller's first packet
 
 What the plugin does (all of it works without configuration):
 
-- **Early connect:** if the HID channel has not appeared after about 1 second, the plugin opens it itself.
+- **Early connect:** if the HID channel has not appeared 0.3 seconds after the connection, the plugin opens it itself.
 - **Answer to the controller:** sends an L2CAP "pending" response to the lost request 4 times, 15 seconds apart, which stops the 28-second drop.
-- **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for about 5 seconds, so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice.
+- **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for a few seconds (5 by default, adjustable from 2 to 6 seconds with the slider under "Steam pickup"), so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice.
 - Optionally keeps the Bluetooth adapter from autosuspending, and records an HCI trace (btmon) for diagnostics.
 
 How the L2CAP answer finds its parameters: the lost request (its `ident` and source channel id) is read from an HCI trace. btmon is started automatically shortly before the PC goes to sleep (when logind announces it) and stopped about 90 seconds after wake, so there is no constant load. If the trace does not contain the request, the plugin falls back to the values the first request of a fresh connection normally has (`ident=1`, `scid=64`); such a response is marked "guessed" in `events.log` and is not counted as a fix. In every trace recorded during testing the lost request was `ident=1`, PSM 1, source channel 64, so these fallback values match what the controller really sends. This part sends a raw ACL packet through an HCI socket as root, so it is fragile by nature: it was tested with a DualSense and a DualSense Edge, but on one machine only, and other controllers or Bluetooth stacks may need different values.
 
-Known limitation: because of the pickup step the controller becomes usable about 5 to 6 seconds after wake, so buttons pressed earlier are ignored.
+Known limitation: because of the pickup step the controller becomes usable about 0.6 to 1 second after the chosen time (5 to 6 seconds by default), so buttons pressed earlier are ignored. A shorter time makes the controller usable sooner, but Steam may then open it the wrong way more often.
 
 ## Installation
 

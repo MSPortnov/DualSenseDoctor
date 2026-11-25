@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.3
+- New slider "Give the controller to Steam after" (2 to 6 seconds, 5 by default) under "Steam pickup": how long the driver stays detached after wake. A shorter time makes the controller usable sooner but Steam may open it the wrong way more often. The value is part of the settings profile, so the statistics (`steam_rebind` shows how often Steam opened it wrongly) are kept separately for each value. The driver stays detached at least 0.5 s whatever the value.
+
+## 0.9.2
+- Removed the "First attempt after" slider: early connect now always starts 0.3 s after the connection (`EARLY_CONNECT_DELAY`). In the logs the HID channel appears about 0.3 s after that attempt; a slower start is not needed. If trouble shows up on some setup, the delay can be raised in a separate fix.
+- The settings profile used in the statistics is now `early_connect+l2cap_answer@pending+steam_pickup@8` (no delay in it).
+
 ## 0.9.1
 - Fixed the HCI trace parser: it looked for the old btmon wording ("ACL Data RX"), but current btmon prints "> ACL: Handle ..." / "> BR-ACL: ...", so the lost request was never found and the answer always used the fallback values. It now reads the real format (checked on traces recorded on the test machine: the lost request is `ident=1`, PSM 1, source channel 64, received before the "Connect Complete" event). The same wording fix restores the filter that keeps the HID report stream out of the dumps.
 - Removed the tracking of how long a connection lasted: the "link held N s / link active" notes in the fix log, the `duration` and end time of a session, the `SHORT` result ("dropped after N s"), the disconnect-reason analysis and the `btmon_NNNN_END` dumps. A connection that ends before the check is finished is simply marked `ABORTED` (not a failure). The statistics are now counted per connection after sleep (`ok`, `fixed`, `failed`, `steam_rebind`, `avg_ttu`).

@@ -298,20 +298,6 @@ function DoctorSection() {
                 onChange={(v: boolean) => set("early_connect", v)}
               />
             </PanelSectionRow>
-            {s.early_connect && (
-              <PanelSectionRow>
-                <SliderField
-                  label={t("bt.early.delay")}
-                  value={s.early_connect_delay}
-                  min={0.3}
-                  max={3.5}
-                  step={0.1}
-                  showValue
-                  valueSuffix={t("bt.sec")}
-                  onChange={(v: number) => set("early_connect_delay", v)}
-                />
-              </PanelSectionRow>
-            )}
             <PanelSectionRow>
               <ToggleField
                 label={t("bt.answer")}
@@ -328,6 +314,21 @@ function DoctorSection() {
                 onChange={(v: boolean) => set("steam_pickup", v)}
               />
             </PanelSectionRow>
+            {s.steam_pickup && (
+              <PanelSectionRow>
+                <SliderField
+                  label={t("bt.bind")}
+                  description={t("bt.bind.desc")}
+                  value={s.steam_bind_at}
+                  min={2}
+                  max={6}
+                  step={0.5}
+                  showValue
+                  valueSuffix={t("bt.sec")}
+                  onChange={(v: number) => set("steam_bind_at", v)}
+                />
+              </PanelSectionRow>
+            )}
             <PanelSectionRow>
               <ToggleField
                 label={t("bt.noSuspend")}
