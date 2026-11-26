@@ -1,7 +1,7 @@
 # Changelog
 
-## 0.9.3
-- New slider "Give the controller to Steam after" (2 to 6 seconds, 5 by default) under "Steam pickup": how long the driver stays detached after wake. A shorter time makes the controller usable sooner but Steam may open it the wrong way more often. The value is part of the settings profile, so the statistics (`steam_rebind` shows how often Steam opened it wrongly) are kept separately for each value. The driver stays detached at least 0.5 s whatever the value.
+## 0.9.4
+- The driver is detached for about 2 seconds after wake (`STEAM_BIND_AT = 2.0`, was 5): tested on the test machine, Steam still opens the controller the right way and it becomes usable about 3 seconds after wake instead of 6. The slider tried in 0.9.3 is removed. If Steam starts opening the controller the wrong way again (`steam_rebind` in the statistics goes up), the time can be raised in a separate fix.
 
 ## 0.9.2
 - Removed the "First attempt after" slider: early connect now always starts 0.3 s after the connection (`EARLY_CONNECT_DELAY`). In the logs the HID channel appears about 0.3 s after that attempt; a slower start is not needed. If trouble shows up on some setup, the delay can be raised in a separate fix.

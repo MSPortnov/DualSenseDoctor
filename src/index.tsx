@@ -1,4 +1,4 @@
-import { ButtonItem, DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, SliderField, ToggleField, staticClasses } from "@decky/ui";
+import { ButtonItem, DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, ToggleField, staticClasses } from "@decky/ui";
 import { callable, definePlugin, routerHook, toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import { FaGamepad } from "react-icons/fa";
@@ -314,21 +314,6 @@ function DoctorSection() {
                 onChange={(v: boolean) => set("steam_pickup", v)}
               />
             </PanelSectionRow>
-            {s.steam_pickup && (
-              <PanelSectionRow>
-                <SliderField
-                  label={t("bt.bind")}
-                  description={t("bt.bind.desc")}
-                  value={s.steam_bind_at}
-                  min={2}
-                  max={6}
-                  step={0.5}
-                  showValue
-                  valueSuffix={t("bt.sec")}
-                  onChange={(v: number) => set("steam_bind_at", v)}
-                />
-              </PanelSectionRow>
-            )}
             <PanelSectionRow>
               <ToggleField
                 label={t("bt.noSuspend")}
