@@ -1,6 +1,7 @@
 """HID devices in sysfs, Steam logs, driver detach/attach."""
 import glob, os, re, time
-from .base import HID_DIR, USER_HOME, read, write_sys
+from .config import HID_DIR, USER_HOME
+from .util import read, write_sys
 
 HID_BUS = "/sys/bus/hid"
 DRIVER = "playstation"
@@ -8,7 +9,7 @@ DRIVER = "playstation"
 def list_ds_hid():
     try:
         names = os.listdir(HID_DIR)
-    except Exception:
+    except OSError:
         return []
     return sorted(n for n in names if ":054C:" in n.upper() and n.startswith("0005:"))
 
@@ -20,18 +21,14 @@ def hid_uniq(n):
 
 def hid_info(n):
     base = os.path.join(HID_DIR, n)
-    drv = None
-    try:
-        drv = os.path.basename(os.readlink(os.path.join(base, "driver")))
-    except OSError:
-        pass
+    drv = driver_of(n)
     inputs = [read(p + "/name").strip() for p in glob.glob(os.path.join(base, "input", "input*"))]
     leds = []
     for l in glob.glob("/sys/class/leds/*"):
         try:
             if n in os.path.realpath(l):
                 leds.append(os.path.basename(l))
-        except Exception:
+        except OSError:
             pass
     hidraw = [os.path.basename(x) for x in glob.glob(os.path.join(base, "hidraw", "hidraw*"))]
     motion = any("Motion Sensors" in i for i in inputs)
@@ -63,7 +60,7 @@ def hidraw_holders(names):
             if os.readlink(fd) in targets:
                 pid = fd.split("/")[2]
                 out.append("%s:%s" % (pid, read("/proc/%s/comm" % pid).strip()))
-        except Exception:
+        except OSError:
             pass
     return sorted(set(out))
 
@@ -125,9 +122,8 @@ def steam_running():
 
 def sync_unbind(n):
     """Detach the current driver from the HID device (the hidraw and input nodes disappear, the link stays)."""
-    try:
-        drv = os.path.basename(os.readlink(os.path.join(HID_DIR, n, "driver")))
-    except OSError:
+    drv = driver_of(n)
+    if drv is None:
         return False, ["no driver bound"]
     try:
         write_sys(HID_BUS + "/drivers/%s/unbind" % drv, n)
@@ -153,32 +149,9 @@ def sync_bind(n):
 
 def sync_rebind(n):
     """Unbind from the current driver, then bind to playstation."""
-    steps = []
-    drv = None
-    try:
-        drv = os.path.basename(os.readlink(os.path.join(HID_DIR, n, "driver")))
-    except OSError:
-        pass
-    if drv:
-        try:
-            write_sys(HID_BUS + "/drivers/%s/unbind" % drv, n)
-            steps.append("unbind(%s) ok" % drv)
-        except OSError as e:
-            steps.append("unbind(%s) err %s" % (drv, e))
-    else:
-        steps.append("no driver bound")
+    _ok, steps = sync_unbind(n)
     time.sleep(0.4)
-    try:
-        write_sys(HID_BUS + "/drivers/playstation/bind", n)
-        steps.append("bind(playstation) ok")
-    except OSError as e:
-        steps.append("bind(playstation) err %s" % e)
-        try:
-            write_sys(HID_BUS + "/drivers_probe", n)
-            steps.append("drivers_probe ok")
-        except OSError as e2:
-            steps.append("drivers_probe err %s" % e2)
-    return steps
+    return steps + sync_bind(n)
 
 
 def driver_of(n):

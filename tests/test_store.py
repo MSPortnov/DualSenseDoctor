@@ -4,13 +4,13 @@ import tempfile
 import unittest
 
 import helpers  # noqa: F401
-from dsd import base, store
+from dsd import config, store
 
 
 class Validate(unittest.TestCase):
     def test_defaults_for_garbage(self):
         for bad in (None, [], "x", 5):
-            self.assertEqual(store.validate_settings(bad), base.DEFAULTS)
+            self.assertEqual(store.validate_settings(bad), config.DEFAULTS)
 
     def test_types_are_checked(self):
         s = store.validate_settings({"early_connect": "yes", "l2cap_answer": 1, "steam_pickup": False,
@@ -36,7 +36,7 @@ class Validate(unittest.TestCase):
 class Disk(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        self._old = (base.SETTINGS_DIR, store.SETTINGS_DIR, store.DATA_DIR)
+        self._old = (config.SETTINGS_DIR, store.SETTINGS_DIR, store.DATA_DIR)
         store.SETTINGS_DIR = store.DATA_DIR = self.dir
 
     def tearDown(self):
@@ -69,7 +69,7 @@ class Disk(unittest.TestCase):
         open(os.path.join(self.dir, "settings.json"), "w").write("{broken")
         open(os.path.join(self.dir, "sessions.json"), "w").write("{broken")
         st = store.Store()
-        self.assertEqual(st.settings, base.DEFAULTS)
+        self.assertEqual(st.settings, config.DEFAULTS)
         self.assertEqual(st.sessions, [])
 
     def test_save_and_reload(self):

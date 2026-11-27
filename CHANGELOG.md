@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2
+- **The "Keep the Bluetooth adapter awake" switch is gone.** The adapter's USB autosuspend is now turned off together with **Early connect** (on = the adapter stays awake, off = SteamOS settings are left alone). A test report showed why it matters: with autosuspend left on, the controller woke up half-dead (buttons dead until PS was pressed, wrong lightbar) although every session looked fine to the plugin. If something turns autosuspend on again, the plugin turns it off again. The original value is saved and put back when Early connect is switched off and when the plugin is unloaded. The old `no_autosuspend` key in `settings.json` is dropped on load. `usb_power.txt` in the report says whether the adapter is protected.
+- **`deploy.sh fetch` makes the report itself:** it leaves a request file (`~/.dsd-report-request`) in the home folder, the plugin (checking once a second) collects a fresh report like the button does, and the script waits up to 40 seconds and downloads it. The plugin accepts only a regular file owned by the user, never a link, and removes it. If the plugin does not answer, the script says so instead of downloading an old report.
+- Tests: 96 (were 81): the adapter (turned off with early connect, undone if set again, original value restored on switch-off and on unload) and the report request (regular file, link, another user's file, folder, one request - one report, a failed report frees the flag).
+
+## 0.10.1
+- Code structure, no change in behaviour: `base.py` is split into `config` (paths, constants, defaults), `i18n` (language) and `util` (helpers); the actions on the driver and Steam moved from `engine.py` to `actions.py` (610 lines left in the engine instead of 813); `lab.py` is split into `covers` (cover lookup), `netinfo` (LAN address) and `lab` (Proton list, Steam VDF files, the per-game journal).
+- `hid.py`: `sync_rebind` reuses `sync_unbind` / `sync_bind` instead of repeating them, the driver name is read in one place.
+- Silent `except Exception` blocks narrowed to the errors that can really happen there (`OSError`, `ProcessLookupError` and so on); the broad handlers that remain are the task boundaries that log the error and keep the plugin running.
+- Slider: the value is shown in its label ("Hide the controller from Steam: 2.5 s") because the built-in value box cut it off; it appears only after the plugin has raised the time itself. The Steam pickup hint shows the real return time.
+- Tests: 81 (were 63). New: the whole connection sequence (normal, late HID with early connect, no HID, unhealthy HID, disconnect before the verdict), the Steam watch (normal, wrong opening with two rebinds, Steam never notices, Steam not running, two wrong sessions raise the time), the L2CAP answer (values from the trace, guessed values are not counted, stops with the session) and the layout of the raw packet itself.
+
 ## 0.10.0
 - **The backend is split into modules** (`py_modules/dsd`: `base`, `hid`, `btmon`, `streams`, `store`, `stats`, `engine`, `report`, `lab`); `main.py` is only the entry point. The behaviour is unchanged; if the package cannot be imported, the panel shows the error text. Install and release scripts now copy `py_modules` too.
 - **Autotests** (`tests/`, standard library only): the btmon parser (including an excerpt of a real trace), statistics, settings, driver restore, self-tuning, reports, clock jumps. They run in CI together with `tsc --noEmit`.

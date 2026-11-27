@@ -90,5 +90,42 @@ class Files(unittest.TestCase):
         self.assertEqual(open(victim).read(), "v")   # the link was removed, its target was not touched
 
 
+class Request(unittest.TestCase):
+    """The file that "deploy.sh fetch" leaves in the home folder to ask for a report."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.p = os.path.join(self.d, ".dsd-report-request")
+
+    def test_no_file_no_request(self):
+        self.assertFalse(report.take_request(self.d))
+
+    def test_regular_file_is_a_request_and_is_removed(self):
+        open(self.p, "w").close()
+        self.assertTrue(report.take_request(self.d))
+        self.assertFalse(os.path.lexists(self.p))
+        self.assertFalse(report.take_request(self.d))   # one request, one report
+
+    def test_symlink_is_not_a_request_and_its_target_stays(self):
+        target = os.path.join(self.d, "target")
+        open(target, "w").write("t")
+        os.symlink(target, self.p)
+        self.assertFalse(report.take_request(self.d))
+        self.assertFalse(os.path.lexists(self.p))
+        self.assertEqual(open(target).read(), "t")
+
+    def test_file_of_another_user_is_not_a_request(self):
+        from unittest import mock
+        open(self.p, "w").close()
+        with mock.patch.object(report, "_owner", lambda: (os.getuid() + 1, 0)), \
+                mock.patch.object(report.os, "geteuid", lambda: 0):
+            self.assertFalse(report.take_request(self.d))
+        self.assertFalse(os.path.lexists(self.p))
+
+    def test_folder_is_not_a_request(self):
+        os.mkdir(self.p)
+        self.assertFalse(report.take_request(self.d))
+
+
 if __name__ == "__main__":
     unittest.main()

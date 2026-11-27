@@ -1,6 +1,7 @@
 """Line streams over subprocesses (journalctl, dbus-monitor, btmon) and the D-Bus parser."""
 import asyncio, os, re, time
-from .base import ANSI, ENV, log
+from .config import log
+from .util import ANSI, ENV
 
 class LineStream:
     def __init__(self, name, cmd, on_line, use_pty=False):
@@ -19,7 +20,7 @@ class LineStream:
         try:
             if self.proc and self.proc.returncode is None:
                 self.proc.terminate()
-        except Exception:
+        except ProcessLookupError:
             pass
         if self.task:
             self.task.cancel()
@@ -93,7 +94,7 @@ class LineStream:
             if not data:
                 try:
                     loop.remove_reader(master)
-                except Exception:
+                except (ValueError, OSError):
                     pass
                 eof.set()
                 return
@@ -108,20 +109,20 @@ class LineStream:
         finally:
             try:
                 loop.remove_reader(master)
-            except Exception:
+            except (ValueError, OSError):
                 pass
             try:
                 os.close(master)
-            except Exception:
+            except OSError:
                 pass
             if self.proc.returncode is None:
                 try:
                     self.proc.terminate()
-                except Exception:
+                except ProcessLookupError:
                     pass
             try:
                 await asyncio.wait_for(self.proc.wait(), 3)
-            except Exception:
+            except asyncio.TimeoutError:
                 pass
 
 

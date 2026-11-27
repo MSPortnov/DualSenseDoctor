@@ -5,10 +5,13 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import tarfile
 import time
 
-from .base import DATA_DIR, DECKY_USER, PLUGIN_LOG_DIR, USER_HOME, VERSION, first_hci, log, read, run, tr
+from .config import DATA_DIR, DECKY_USER, log, PLUGIN_LOG_DIR, REPORT_REQUEST_NAME, USER_HOME, VERSION
+from .i18n import tr
+from .util import first_hci, read, run
 from .stats import compute_stats
 
 # AA:BB:CC:DD:EE:FF or AA_BB_CC_DD_EE_FF (the form in D-Bus paths): the last three bytes are replaced with XX,
@@ -26,8 +29,28 @@ def _owner():
     try:
         pw = pwd.getpwnam(DECKY_USER)
         return pw.pw_uid, pw.pw_gid
-    except Exception:
+    except KeyError:
         return None
+
+
+def take_request(home=None):
+    """"deploy.sh fetch" asks for a report by creating ~/.dsd-report-request. The plugin runs as root and the folder belongs to the
+    user, so only a regular file owned by that user counts (never a link, never someone else's file). The file is always removed:
+    unlink removes a link itself and does not follow it. Returns True when a report was asked for."""
+    path = os.path.join(home or USER_HOME, REPORT_REQUEST_NAME)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    ok = stat.S_ISREG(st.st_mode)
+    own = _owner()
+    if ok and own and os.geteuid() == 0 and st.st_uid != own[0]:
+        ok = False
+    try:
+        os.unlink(path)
+    except OSError:
+        return False
+    return ok
 
 
 def create_file(path):
@@ -39,8 +62,8 @@ def create_file(path):
         own = _owner()
         if own and os.geteuid() == 0:
             os.fchown(fd, own[0], own[1])
-    except Exception:
-        pass
+    except OSError as e:
+        log.error("report chown: %s", e)
     return fd
 
 
@@ -127,6 +150,7 @@ async def build_report(eng):
     up = "usb device: %s\n" % usbdev
     for f in ("power/control", "power/wakeup", "power/autosuspend_delay_ms", "power/runtime_status"):
         up += "%s = %s\n" % (f, read(os.path.join(usbdev, f)).strip())
+    up += "keep awake (follows early connect): %s\n" % ("on" if eng.cfg.get("early_connect") else "OFF, the adapter may autosuspend")
     wf("usb_power.txt", up)
     wk = ""
     for k, (nm, dev, ev, wc) in sorted(eng.read_wakeup().items()):

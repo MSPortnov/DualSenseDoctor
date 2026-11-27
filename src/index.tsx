@@ -331,14 +331,6 @@ function DoctorSection() {
             )}
             <PanelSectionRow>
               <ToggleField
-                label={t("bt.noSuspend")}
-                description={t("bt.noSuspend.desc")}
-                checked={!!s.no_autosuspend}
-                onChange={(v: boolean) => set("no_autosuspend", v)}
-              />
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <ToggleField
                 label={t("bt.btmon")}
                 description={t("bt.btmon.desc")}
                 checked={!!s.btmon}

@@ -32,7 +32,7 @@ What the plugin does (all of it works without configuration):
 - **Early connect:** if the HID channel has not appeared 0.3 seconds after the connection, the plugin opens it itself.
 - **Answer to the controller:** sends an L2CAP "pending" response to the lost request 4 times, 15 seconds apart, which stops the 28-second drop.
 - **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for 2 seconds after the connection (the time is raised automatically if needed, see below), so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice. If this happens twice in a row, the plugin raises the return time by 0.5 s (up to 6 s) on its own and shows a notification; only then a slider for the time appears in the settings, with the default 2 s there is nothing to adjust. The driver is always put back, also when the plugin is unloaded, and the result is checked (retries, then a Bluetooth reconnect request if the link is gone).
-- Optionally keeps the Bluetooth adapter from autosuspending, and records an HCI trace (btmon) for diagnostics.
+- Together with early connect the plugin keeps the Bluetooth adapter from autosuspending (SteamOS turned it on, and with it the controller can wake up half-dead: buttons dead until PS is pressed, wrong lightbar). The original value is put back when early connect is turned off or the plugin is unloaded. There is also an optional HCI trace (btmon) for diagnostics.
 
 How the L2CAP answer finds its parameters: the lost request (its `ident` and source channel id) is read from an HCI trace. btmon is started automatically shortly before the PC goes to sleep (when logind announces it) and stopped about 90 seconds after wake, so there is no constant load. If the trace does not contain the request, the plugin falls back to the values the first request of a fresh connection normally has (`ident=1`, `scid=64`); such a response is marked "guessed" in `events.log` and is not counted as a fix. In every trace recorded during testing the lost request was `ident=1`, PSM 1, source channel 64, so these fallback values match what the controller really sends. This part sends a raw ACL packet through an HCI socket as root, so it is fragile by nature: it was tested with a DualSense and a DualSense Edge, but on one machine only, and other controllers or Bluetooth stacks may need different values.
 
@@ -72,10 +72,10 @@ Lab alone would not need it. Nothing is downloaded or sent anywhere, and all cha
 
 ## Reporting a problem
 
-In the plugin open "Bluetooth settings" and press "Collect Bluetooth report". The report is saved in the home folder of the SteamOS user (`dualsense-doctor-DATE-summary.txt` and a full `.tar.gz` archive). To download it from another computer:
+In the plugin open "Bluetooth settings" and press "Collect Bluetooth report". The report is saved in the home folder of the SteamOS user (`dualsense-doctor-DATE-summary.txt` and a full `.tar.gz` archive). From another computer one command asks the plugin for a fresh report and downloads it (it waits up to 40 seconds; if the plugin does not answer, press the button and run it again):
 
 ```bash
-bash deploy.sh ADDRESS fetch   # report and archive go to ~/Downloads
+bash deploy.sh ADDRESS fetch   # makes a fresh report; report and archive go to ~/Downloads
 bash deploy.sh ADDRESS logs    # Decky and plugin logs go to ~/Downloads/dsd-diag.txt
 ```
 
@@ -83,7 +83,7 @@ Each new report replaces the old ones (and `deploy.sh` removes old reports on th
 
 ## Settings
 
-Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect, answer to the controller, Steam pickup with the driver return time, no adapter autosuspend, HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
+Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect, which also keeps the adapter awake; answer to the controller; Steam pickup with the driver return time; HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
 
 ## License
 

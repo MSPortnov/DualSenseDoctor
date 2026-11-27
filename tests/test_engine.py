@@ -4,9 +4,10 @@ import unittest
 from unittest import mock
 
 import helpers  # noqa: F401
+from dsd import actions as actions_mod
 from dsd import engine as eng_mod
 from dsd import hid as hid_mod
-from dsd.base import mono
+from dsd.util import mono
 
 MAC = "3C:4D:5E:11:22:33"
 HID = "0005:054C:0CE6.0003"
@@ -57,7 +58,7 @@ class Base(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(hid_mod, "sync_unbind", self.calls.unbind),
             mock.patch.object(hid_mod, "sync_restore", self.calls.restore),
             mock.patch.object(hid_mod, "device_present", lambda n: self.calls.present),
-            mock.patch.object(eng_mod, "STEAM_HOLD_DELAY", 0.05),
+            mock.patch.object(actions_mod, "STEAM_HOLD_DELAY", 0.05),
         ]
         for p in self.patches:
             p.start()
@@ -185,7 +186,7 @@ class Tune(Base):
         class D:
             async def emit(_, *a):
                 self.sent.append(a)
-        self.p = mock.patch.object(eng_mod, "decky", D())
+        self.p = mock.patch.object(actions_mod, "decky", D())
         self.p.start()
 
     async def asyncTearDown(self):
@@ -204,15 +205,15 @@ class Tune(Base):
         self.assertIn("2.5", self.sent[0][2])
 
     async def test_russian_text_uses_a_comma(self):
-        from dsd import base
-        base.set_lang("ru")
+        from dsd import i18n
+        i18n.set_lang("ru")
         try:
             a, b = bad(id=1), bad(id=2)
             self.e.sessions[:] = [a, b]
             await self.e.maybe_tune(b)
             self.assertIn("2,5", self.sent[0][2])
         finally:
-            base.set_lang("en")
+            i18n.set_lang("en")
 
     async def test_next_step_needs_two_new_failures(self):
         a, b = bad(id=1), bad(id=2)
@@ -291,3 +292,113 @@ class Clock(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Adapter(Base):
+    """The adapter is kept awake together with early connect and put back as it was."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        self.pm = os.path.join(tempfile.mkdtemp(), "control")
+
+    def put(self, v):
+        with open(self.pm, "w") as f:
+            f.write(v)
+
+    def get(self):
+        with open(self.pm) as f:
+            return f.read().strip()
+
+    def patched(self):
+        return mock.patch.object(self.e, "adapter_pm_path", lambda: self.pm), \
+            mock.patch.object(eng_mod, "write_sys", lambda p, v: self.put(v))
+
+    async def test_early_connect_on_turns_autosuspend_off(self):
+        self.put("auto")
+        a, b = self.patched()
+        with a, b:
+            self.assertEqual(self.e.ensure_adapter_awake("t"), "auto")
+            self.assertEqual(self.get(), "on")
+            self.assertEqual(self.e.pm_orig, "auto")
+
+    async def test_early_connect_off_leaves_the_adapter_alone(self):
+        self.put("auto")
+        self.e.cfg["early_connect"] = False
+        a, b = self.patched()
+        with a, b:
+            self.assertIsNone(self.e.ensure_adapter_awake("t"))
+            self.assertEqual(self.get(), "auto")
+
+    async def test_user_turning_it_back_on_is_undone(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("auto")
+            self.e.ensure_adapter_awake("t")
+            self.put("auto")   # someone sets autosuspend again
+            self.e.ensure_adapter_awake("after sleep")
+            self.assertEqual(self.get(), "on")
+            self.assertEqual(self.e.pm_orig, "auto")   # the original value is not overwritten by a later pass
+
+    async def test_switch_off_restores_the_original(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("auto")
+            self.e.ensure_adapter_awake("t")
+            await self.e.set_setting("early_connect", False)
+            self.assertEqual(self.get(), "auto")
+            self.assertIsNone(self.e.pm_orig)
+            await self.e.set_setting("early_connect", True)
+            self.assertEqual(self.get(), "on")
+
+    async def test_unload_restores_the_original(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("auto")
+            self.e.ensure_adapter_awake("t")
+            self.e.restore_adapter_pm("unload")
+            self.assertEqual(self.get(), "auto")
+
+    async def test_nothing_to_restore_when_it_was_already_on(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("on")
+            self.e.ensure_adapter_awake("t")
+            self.e.restore_adapter_pm("unload")
+            self.assertEqual(self.get(), "on")
+
+    async def test_old_setting_is_not_a_setting_any_more(self):
+        from dsd.store import validate_settings
+        self.assertNotIn("no_autosuspend", validate_settings({"no_autosuspend": False}))
+        r = await self.e.set_setting("no_autosuspend", False)
+        self.assertNotIn("no_autosuspend", r)
+
+
+class ReportRequest(Base):
+    async def test_request_starts_one_report(self):
+        calls = []
+
+        async def fake():
+            calls.append(1)
+            return {}
+        self.e.build_report = fake
+        with mock.patch.object(eng_mod.report, "take_request", lambda: True):
+            self.e.check_report_request()
+            self.e.check_report_request()   # a report is already being made
+            await asyncio.gather(*list(self.e.bg))
+        self.assertEqual(calls, [1])
+        self.assertFalse(self.e.report_busy)
+
+    async def test_no_request_no_report(self):
+        with mock.patch.object(eng_mod.report, "take_request", lambda: False):
+            self.e.check_report_request()
+        self.assertEqual(len(self.e.bg), 0)
+
+    async def test_failed_report_frees_the_flag(self):
+        async def boom():
+            raise OSError("disk full")
+        self.e.build_report = boom
+        with mock.patch.object(eng_mod.report, "take_request", lambda: True):
+            self.e.check_report_request()
+            await asyncio.gather(*list(self.e.bg))
+        self.assertFalse(self.e.report_busy)

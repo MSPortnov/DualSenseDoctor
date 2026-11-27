@@ -2,7 +2,8 @@
 import json
 import os
 
-from .base import DATA_DIR, DEFAULTS, MAX_SESSIONS, PLUGIN_LOG_DIR, RANGES, SETTINGS_DIR, iso, log, norm_range
+from .config import DATA_DIR, DEFAULTS, log, MAX_SESSIONS, norm_range, PLUGIN_LOG_DIR, RANGES, SETTINGS_DIR
+from .util import iso
 import time
 
 
@@ -48,21 +49,21 @@ class Store:
         try:
             with open(self.settings_path) as f:
                 saved = json.load(f)
-        except Exception:
+        except (OSError, ValueError):
             saved = None
         self.settings = validate_settings(saved)
         try:
             with open(self.sessions_path) as f:
                 loaded = json.load(f)
             self.sessions = [s for s in loaded if isinstance(s, dict)] if isinstance(loaded, list) else []
-        except Exception:
+        except (OSError, ValueError):
             self.sessions = []
         self.next_id = max([s.get("id", 0) for s in self.sessions if isinstance(s.get("id", 0), int)] + [0]) + 1
 
     def save_settings(self):
         try:
             atomic_write_json(self.settings_path, self.settings, indent=1)
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             log.error("save settings: %s", e)
 
     def save_sessions(self):
@@ -71,7 +72,7 @@ class Store:
         clean = [{k: v for k, v in s.items() if not k.startswith("_")} for s in self.sessions]
         try:
             atomic_write_json(self.sessions_path, clean, ensure_ascii=False)
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             log.error("save sessions: %s", e)
 
     def elog(self, kind, msg):
@@ -80,5 +81,5 @@ class Store:
                 os.replace(self.events_path, self.events_path + ".1")
             with open(self.events_path, "a") as f:
                 f.write("%s [%s] %s\n" % (iso(time.time()), kind, msg))
-        except Exception as e:
+        except OSError as e:
             log.error("elog: %s", e)

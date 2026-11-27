@@ -12,13 +12,13 @@ for _p in (os.path.join(_HERE, "py_modules"), _HERE):
         sys.path.insert(0, _p)
 
 try:
-    from dsd import base, lab
-    from dsd.base import log
+    from dsd import covers, i18n, lab, netinfo
+    from dsd.config import log
     from dsd.engine import Engine
     IMPORT_ERROR = None
 except Exception:  # the interface shows this text instead of silently failing to load
     IMPORT_ERROR = traceback.format_exc()
-    base = lab = Engine = None
+    i18n = lab = covers = netinfo = Engine = None
     try:
         import decky
         log = decky.logger
@@ -69,7 +69,7 @@ class Plugin:
     async def get_cover(self, appid):
         """Game cover for the Lab grid (data: URI), an empty string if there is no file."""
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, lab.read_cover, int(appid))
+            return await asyncio.get_running_loop().run_in_executor(None, covers.read_cover, int(appid))
         except Exception as e:
             log.error("get_cover(%s): %s", appid, e)
             return ""
@@ -80,7 +80,7 @@ class Plugin:
             if g:
                 return g
             st = await ENGINE.get_state()
-            st["host_ip"] = lab._lan_ip()
+            st["host_ip"] = netinfo.lan_ip()
             return st
         except Exception:
             tb = traceback.format_exc()
@@ -89,10 +89,10 @@ class Plugin:
 
     async def set_lang(self, lang):
         """Language of messages and reports: the interface reports it on load and on change."""
-        if base is None:
+        if i18n is None:
             return "en"
         if ENGINE is None:
-            return base.set_lang(lang)
+            return i18n.set_lang(lang)
         return await ENGINE.set_lang(lang)
 
     async def set_setting(self, key, value):
