@@ -2,3 +2,5 @@ node_modules
 dist
 # package manager: pnpm (commit pnpm-lock.yaml), the npm lock file is not used
 package-lock.json
+__pycache__/
+*.pyc

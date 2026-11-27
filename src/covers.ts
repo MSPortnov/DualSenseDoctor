@@ -69,3 +69,11 @@ export function load(g: GameInfo): Promise<string> {
 export function markBroken(appid: number): void {
   cache.set(appid, "");
 }
+
+// Forget the covers of games that are no longer in the library (called whenever the library list is read).
+export function prune(appids: number[]): void {
+  const keep = new Set(appids);
+  for (const id of Array.from(cache.keys())) {
+    if (!keep.has(id)) cache.delete(id);
+  }
+}

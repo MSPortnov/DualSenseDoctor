@@ -231,7 +231,11 @@ export default function LabPage() {
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState<steam.GameInfo | null>(null);
   const [fromList, setFromList] = useState(false); // the open game was picked from the list
-  const games = useMemo(() => steam.getGames(), []);
+  const games = useMemo(() => {
+    const list = steam.getGames();
+    covers.prune(list.map((g) => g.appid)); // covers of games that left the library are dropped from memory
+    return list;
+  }, []);
 
   // for handlers that outlive a render
   const cur = useRef({ selected, fromList });

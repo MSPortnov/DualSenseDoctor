@@ -16,6 +16,12 @@ TARGET="$RUSER@$HOST"
 SSHO="-o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPath=/tmp/dsd-ssh-%C -o ControlPersist=120"
 say ">> ПК: $TARGET" ">> PC: $TARGET"
 
+# Old reports on the PC are deleted on every run, except in "fetch" mode (there the latest one is needed) and "logs"
+clean_reports() {
+  ssh $SSHO "$TARGET" 'rm -f ~/dualsense-doctor-[0-9]*-summary.txt ~/dualsense-doctor-[0-9]*.tar.gz' || true
+  say ">> старые отчёты на ПК удалены" ">> old reports on the PC removed"
+}
+
 if [ "$MODE" = "logs" ]; then
   OUT="$HOME/Downloads/dsd-diag.txt"
   ssh -t $SSHO "$TARGET" 'echo "### plugin_loader"; sudo journalctl -u plugin_loader -n 150 --no-pager | grep -iE -B2 -A12 "dualsense|traceback|error" | tail -n 150; echo; echo "### logs dir"; ls -la ~/homebrew/logs/ ~/homebrew/logs/DualSense*/ 2>&1; echo; echo "### plugin log"; tail -n 80 ~/homebrew/logs/DualSense*/*.log 2>&1; echo; echo "### plugin dir"; ls -laR ~/homebrew/plugins/DualSense*/ 2>&1 | head -40' | tee "$OUT"
@@ -68,12 +74,13 @@ fi
 echo ">> pnpm run build"; pnpm run build
 [ -f dist/index.js ] || { say "Сборка не создала dist/index.js" "The build did not create dist/index.js"; exit 1; }
 
+clean_reports
 say ">> отправка файлов" ">> copying files"
 ssh $SSHO "$TARGET" 'rm -rf /tmp/dsd-deploy && mkdir -p /tmp/dsd-deploy'
-rsync -az -e "ssh $SSHO" plugin.json package.json main.py LICENSE dist "$TARGET:/tmp/dsd-deploy/"
+rsync -az --delete --exclude __pycache__ -e "ssh $SSHO" plugin.json package.json main.py LICENSE dist py_modules "$TARGET:/tmp/dsd-deploy/"
 
 say ">> установка (спросит пароль sudo на ПК)" ">> installing (asks for the sudo password on the PC)"
-ssh -t $SSHO "$TARGET" 'D="$HOME/homebrew/plugins/DualSense Doctor"; sudo rm -rf "$D" && sudo mkdir -p "$D/dist" && sudo cp /tmp/dsd-deploy/plugin.json /tmp/dsd-deploy/package.json /tmp/dsd-deploy/main.py /tmp/dsd-deploy/LICENSE "$D/" && sudo cp -r /tmp/dsd-deploy/dist/* "$D/dist/" && sudo systemctl restart plugin_loader && echo OK'
+ssh -t $SSHO "$TARGET" 'D="$HOME/homebrew/plugins/DualSense Doctor"; sudo rm -rf "$D" && sudo mkdir -p "$D/dist" && sudo cp /tmp/dsd-deploy/plugin.json /tmp/dsd-deploy/package.json /tmp/dsd-deploy/main.py /tmp/dsd-deploy/LICENSE "$D/" && sudo cp -r /tmp/dsd-deploy/dist/* "$D/dist/" && sudo cp -r /tmp/dsd-deploy/py_modules "$D/" && sudo systemctl restart plugin_loader && echo OK'
 echo "$HOST" > "$HOME/.dsd_host"
 say ">> Готово. Quick Access Menu (кнопка ...) -> DualSense Doctor." ">> Done. Quick Access Menu (... button) -> DualSense Doctor."
 say ">> Если сразу после обновления магазин Steam откроется пустым, откройте его ещё раз: это Steam перезагружает интерфейс после перезапуска Decky, к плагину не относится." ">> If the Steam Store opens blank right after an update, open it once more: Steam reloads its interface after Decky restarts, it is not related to the plugin."

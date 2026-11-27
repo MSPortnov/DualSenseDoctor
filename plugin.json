@@ -13,6 +13,7 @@
       "proton",
       "steam-input"
     ],
-    "description": "Per-game launch options (Proton, Steam Input) for DualSense and automatic fixes for the Bluetooth connection after sleep."
+    "description": "Per-game launch options (Proton, Steam Input) for DualSense and automatic fixes for the Bluetooth connection after sleep.",
+    "image": "https://raw.githubusercontent.com/MSPortnov/DualSenseDoctor/main/assets/screenshots/panel.jpeg"
   }
 }

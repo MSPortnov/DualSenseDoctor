@@ -62,7 +62,10 @@ const en: Dict = {
   "bt.answer": "Reply to the controller",
   "bt.answer.desc": "Stops the controller from dropping the link at about 28 s: answers the request that was lost on wake-up.",
   "bt.pickup": "Steam pickup",
-  "bt.pickup.desc": "After wake-up the controller is hidden from Steam for about two seconds so that Steam opens it the right way (buttons A and B, light). If Steam still misses it or opens it wrongly, the plugin reconnects the device.",
+  "bt.pickup.desc": "After wake-up the controller is hidden from Steam for {n} s so that Steam has time to wake up and opens it the right way. If Steam still misses it or opens it wrongly, the plugin reconnects the device.",
+  "bt.bind": "Hide the controller from Steam",
+  "bt.bind.desc": "Shorter: the controller works sooner, but Steam may open it the wrong way (A and B swapped). Longer: safer. If Steam gets it wrong twice in a row, the plugin raises this by 0.5 s and tells you.",
+  "bt.sec": "s",
   "bt.noSuspend": "Keep the Bluetooth adapter awake",
   "bt.noSuspend.desc": "After a SteamOS update the adapter got auto-suspend. The plugin restores the \"always on\" mode as before.",
   "bt.btmon": "HCI trace (diagnostics)",
@@ -145,7 +148,10 @@ const ru: Dict = {
   "bt.answer": "Ответ контроллеру",
   "bt.answer.desc": "Не даёт контроллеру оборвать связь на ~28-й секунде: отвечает ему на потерянный при пробуждении запрос.",
   "bt.pickup": "Подхват Steam",
-  "bt.pickup.desc": "После пробуждения контроллер примерно на две секунды скрывается от Steam, чтобы Steam открыл его правильно (кнопки A и B, подсветка). Если Steam всё же его пропустил или открыл неверно, плагин переподключает устройство.",
+  "bt.pickup.desc": "После пробуждения контроллер на {n} сек скрывается от Steam, чтобы Steam успел проснуться и открыл его правильно. Если Steam всё же его пропустил или открыл неверно, плагин переподключает устройство.",
+  "bt.bind": "Скрывать контроллер от Steam",
+  "bt.bind.desc": "Меньше: контроллер работает раньше, но Steam может открыть его неверно (A и B перепутаны). Больше: надёжнее. Если Steam дважды подряд ошибся, плагин сам увеличит значение на 0,5 с и сообщит об этом.",
+  "bt.sec": "с",
   "bt.noSuspend": "Не усыплять Bluetooth-адаптер",
   "bt.noSuspend.desc": "После обновления SteamOS адаптер получил автосон. Плагин возвращает режим «всегда включён», как было раньше.",
   "bt.btmon": "HCI-трасса (диагностика)",
@@ -233,6 +239,12 @@ function systemLang(): "ru" | "en" {
 
 function getLang(): "ru" | "en" {
   return pref === "auto" ? systemLang() : pref;
+}
+
+// a number for the text: a comma as the decimal separator in Russian (2,5), a dot otherwise (2.5)
+export function num(n: number): string {
+  const s = String(n);
+  return getLang() === "ru" ? s.replace(".", ",") : s;
 }
 
 export function t(key: string, vars?: Record<string, string | number>): string {

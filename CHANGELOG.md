@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.0
+- **The backend is split into modules** (`py_modules/dsd`: `base`, `hid`, `btmon`, `streams`, `store`, `stats`, `engine`, `report`, `lab`); `main.py` is only the entry point. The behaviour is unchanged; if the package cannot be imported, the panel shows the error text. Install and release scripts now copy `py_modules` too.
+- **Autotests** (`tests/`, standard library only): the btmon parser (including an excerpt of a real trace), statistics, settings, driver restore, self-tuning, reports, clock jumps. They run in CI together with `tsc --noEmit`.
+- **The driver always comes back.** Background tasks are tracked; on unload they are cancelled and the driver is put back. After the restore the plugin checks that the driver is really attached and retries (drivers_probe, then a full rebind); if the link is gone, it asks the controller to connect once. On start, a controller left without a driver (the plugin was killed) gets it back.
+- **Self-tuning of the driver return time:** two wrong Steam pickups in a row at the same time raise it by 0.5 s (up to 6 s) and show a notification. The time is a setting again (default 2 s); its slider (2 to 6 s, step 0.5) appears in the settings only after the plugin has raised the time, at the default 2 s it is hidden.
+- Settings are written atomically and checked on load (types, range); a damaged file falls back to defaults.
+- Intervals around sleep are measured with the monotonic clock (a wall-clock correction after wake can no longer confuse the "after sleep" check).
+- Reports: old reports are deleted when a new one is made (and by `deploy.sh`/`update.sh` on install); files are created with `O_EXCL | O_NOFOLLOW` and the archive is written by Python instead of `tar`, so a planted link is never followed; the last three bytes of every Bluetooth address are masked.
+- Covers of games that left the library are dropped from the cache.
+- Store: `plugin.json` has the store image, screenshots are in `assets/screenshots` and in both READMEs.
+
 ## 0.9.4
 - The driver is detached for about 2 seconds after wake (`STEAM_BIND_AT = 2.0`, was 5): tested on the test machine, Steam still opens the controller the right way and it becomes usable about 3 seconds after wake instead of 6. The slider tried in 0.9.3 is removed. If Steam starts opening the controller the wrong way again (`steam_rebind` in the statistics goes up), the time can be raised in a separate fix.
 

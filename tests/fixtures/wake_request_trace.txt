@@ -1,0 +1,11 @@
+# btmon trace in the format of the real reports (btmon 5.x): the controller's lost SDP request after wake.
+# expect: ident=1 scid=64
+09:08:03.101 @ MGMT Event: Device Connected (0x000b) plane 0 len 13
+09:08:03.250 > HCI Event: Connect Complete (0x03) plen 11
+09:08:03.251         Handle: 256 Address: 3C:4D:5E:11:22:33 (Sony Interactive Entertainment Inc.)
+09:08:05.480 > ACL: Handle 256 flags 0x02 dlen 12
+09:08:05.480       L2CAP: Connection Request (0x02) ident 1 len 4
+09:08:05.480         PSM: 1 (0x0001)
+09:08:05.480         Source CID: 64
+09:08:05.690 < ACL: Handle 256 flags 0x00 dlen 16
+09:08:05.690       L2CAP: Connection Response (0x03) ident 1 len 8

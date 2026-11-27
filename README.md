@@ -9,6 +9,12 @@ A [Decky Loader](https://decky.xyz/) plugin for the DualSense controller on Stea
 
 Tested with a DualSense and a DualSense Edge over Bluetooth on a SteamOS desktop PC. Other setups may behave differently, reports are welcome (see [Reporting a problem](#reporting-a-problem)).
 
+## Screenshots
+
+| Quick Access menu | Bluetooth settings | Game setup |
+| --- | --- | --- |
+| ![The plugin in the Quick Access menu](assets/screenshots/panel.jpeg) | ![Bluetooth settings](assets/screenshots/bluetooth-settings.jpeg) | ![Launch options of a game](assets/screenshots/game-setup.jpeg) |
+
 ## Lab: launch options per game
 
 Open the Quick Access menu, press "Set up games" and pick a game from the cover grid (7 per row, alphabetical, like Steam's library). Covers come from Steam's local cache and your own artwork in `userdata/*/config/grid` (this is how non-Steam games get covers), then from Steam's servers; a name tile is shown when there is no cover.
@@ -25,7 +31,7 @@ What the plugin does (all of it works without configuration):
 
 - **Early connect:** if the HID channel has not appeared 0.3 seconds after the connection, the plugin opens it itself.
 - **Answer to the controller:** sends an L2CAP "pending" response to the lost request 4 times, 15 seconds apart, which stops the 28-second drop.
-- **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for about 2 seconds after the connection, so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice.
+- **Steam pickup:** the HID device is created right away (the link needs it), but its driver is detached for 2 seconds after the connection (the time is raised automatically if needed, see below), so Steam sees the controller for the first time when it is no longer busy waking up and opens it the right way (one "connected" notification). If Steam still opens it wrongly (the Steam log says "Invalid or missing unit serial number"), the plugin rebinds the driver, up to twice. If this happens twice in a row, the plugin raises the return time by 0.5 s (up to 6 s) on its own and shows a notification; only then a slider for the time appears in the settings, with the default 2 s there is nothing to adjust. The driver is always put back, also when the plugin is unloaded, and the result is checked (retries, then a Bluetooth reconnect request if the link is gone).
 - Optionally keeps the Bluetooth adapter from autosuspending, and records an HCI trace (btmon) for diagnostics.
 
 How the L2CAP answer finds its parameters: the lost request (its `ident` and source channel id) is read from an HCI trace. btmon is started automatically shortly before the PC goes to sleep (when logind announces it) and stopped about 90 seconds after wake, so there is no constant load. If the trace does not contain the request, the plugin falls back to the values the first request of a fresh connection normally has (`ident=1`, `scid=64`); such a response is marked "guessed" in `events.log` and is not counted as a fix. In every trace recorded during testing the lost request was `ident=1`, PSM 1, source channel 64, so these fallback values match what the controller really sends. This part sends a raw ACL packet through an HCI socket as root, so it is fragile by nature: it was tested with a DualSense and a DualSense Edge, but on one machine only, and other controllers or Bluetooth stacks may need different values.
@@ -42,6 +48,8 @@ Known limitation: because of the pickup step the controller becomes usable about
 pnpm install --frozen-lockfile
 pnpm run build        # creates dist/
 ```
+
+Autotests (standard library only, no packages needed): `python3 -m unittest discover -s tests`.
 
 Helper scripts build and install the plugin on a SteamOS machine:
 
@@ -71,11 +79,11 @@ bash deploy.sh ADDRESS fetch   # report and archive go to ~/Downloads
 bash deploy.sh ADDRESS logs    # Decky and plugin logs go to ~/Downloads/dsd-diag.txt
 ```
 
-The report contains system logs and Bluetooth device addresses, so look through it before posting it publicly. The plugin's own logs are in `~/homebrew/logs/DualSense Doctor/`.
+Each new report replaces the old ones (and `deploy.sh` removes old reports on the PC when it installs). The last three bytes of every Bluetooth address are replaced with `XX`, but the report still contains system logs, so look through it before posting it publicly. The plugin's own logs are in `~/homebrew/logs/DualSense Doctor/`.
 
 ## Settings
 
-Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect and its delay, answer to the controller, Steam pickup, no adapter autosuspend, HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
+Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect, answer to the controller, Steam pickup with the driver return time, no adapter autosuspend, HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
 
 ## License
 

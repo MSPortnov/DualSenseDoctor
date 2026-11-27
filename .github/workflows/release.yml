@@ -25,10 +25,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      - name: Autotests
+        run: python3 -m unittest discover -s tests
       - name: Package
         run: |
           mkdir -p "pkg/DualSense Doctor"
-          cp -r dist main.py plugin.json package.json LICENSE README.md "pkg/DualSense Doctor/"
+          cp -r dist py_modules main.py plugin.json package.json LICENSE README.md "pkg/DualSense Doctor/"
           (cd pkg && zip -r ../DualSenseDoctor.zip "DualSense Doctor")
       - uses: softprops/action-gh-release@v2
         with:

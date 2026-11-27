@@ -18,5 +18,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      - name: Type-check the frontend
+        run: pnpm exec tsc --noEmit
       - name: Check the Python backend
-        run: python3 -m py_compile main.py
+        run: python3 -m compileall -q main.py py_modules
+      - name: Autotests
+        run: python3 -m unittest discover -s tests -v

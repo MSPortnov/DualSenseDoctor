@@ -1,9 +1,9 @@
-import { ButtonItem, DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, ToggleField, staticClasses } from "@decky/ui";
-import { callable, definePlugin, routerHook, toaster } from "@decky/api";
+import { ButtonItem, DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, SliderField, ToggleField, staticClasses } from "@decky/ui";
+import { addEventListener, callable, definePlugin, removeEventListener, routerHook, toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import { FaGamepad } from "react-icons/fa";
 import LabPage from "./LabPage";
-import { setPref, syncLang, t, useLang } from "./i18n";
+import { num, setPref, syncLang, t, useLang } from "./i18n";
 import type { LangPref } from "./i18n";
 import { VARIANTS } from "./ladder";
 import * as nav from "./nav";
@@ -309,11 +309,26 @@ function DoctorSection() {
             <PanelSectionRow>
               <ToggleField
                 label={t("bt.pickup")}
-                description={t("bt.pickup.desc")}
+                description={t("bt.pickup.desc", { n: num(typeof s.steam_bind_at === "number" ? s.steam_bind_at : 2) })}
                 checked={!!s.steam_pickup}
                 onChange={(v: boolean) => set("steam_pickup", v)}
               />
             </PanelSectionRow>
+            {/* shown only after the plugin has raised the time on its own: at the default 2 s everything works */}
+            {s.steam_pickup && typeof s.steam_bind_at === "number" && s.steam_bind_at > 2 && (
+              <PanelSectionRow>
+                <SliderField
+                  // the built-in value box is too narrow for "2,5 с" and cuts it off, so the value is part of the label
+                  label={t("bt.bind") + ": " + num(typeof s.steam_bind_at === "number" ? s.steam_bind_at : 2) + " " + t("bt.sec")}
+                  description={t("bt.bind.desc")}
+                  value={typeof s.steam_bind_at === "number" ? s.steam_bind_at : 2}
+                  min={2}
+                  max={6}
+                  step={0.5}
+                  onChange={(v: number) => set("steam_bind_at", v)}
+                />
+              </PanelSectionRow>
+            )}
             <PanelSectionRow>
               <ToggleField
                 label={t("bt.noSuspend")}
@@ -440,6 +455,11 @@ export default definePlugin(() => {
   store.init();
   const stopTracker = startTracker();
   routerHook.addRoute(ROUTE, () => <LabPage />, { exact: true });
+  // the backend raised the driver return time on its own (two wrong Steam pickups in a row): tell the user
+  const onTuned = (_value: number, text: string) => {
+    toaster.toast({ title: "DualSense Doctor", body: text, duration: 12000 });
+  };
+  addEventListener("dsd_tuned", onTuned);
 
   return {
     name: "DualSense Doctor",
@@ -448,6 +468,7 @@ export default definePlugin(() => {
     icon: <FaGamepad />,
     onDismount() {
       stopTracker();
+      removeEventListener("dsd_tuned", onTuned);
       nav.suppressReopen();
       routerHook.removeRoute(ROUTE);
     },

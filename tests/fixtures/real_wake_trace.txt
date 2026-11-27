@@ -1,0 +1,24 @@
+# Excerpt of a REAL btmon trace of DualSense Doctor 0.9.x (report 20261126-071825, session 39, a connection after sleep).
+# MAC addresses are masked. The saved reports do not keep the packet header lines ("> ACL: ..."), so those lines are put back
+# here in the form btmon prints them; the rest is untouched.
+# expect: ident=1 scid=64
+14:17:21.463 > HCI Event: Vendor (0xff) plen 4                      #268 [hci0] 17098.454970
+14:17:21.463       Intel PTT Switch Notification (0x26)
+14:17:21.463         Handle: 256
+14:17:21.463         Packet type table: Enhanced data rate (0x01)
+14:17:21.463 > ACL: Handle 256 flags 0x02 dlen 12                         #269 [hci0] 17098.454970
+14:17:21.463       L2CAP: Connection Request (0x02) ident 1 len 4
+14:17:21.463         PSM: 1 (0x0001)
+14:17:21.463         Source CID: 64
+14:17:21.463 > HCI Event: Connect Complete (0x03) plen 11           #270 [hci0] 17098.455972
+14:17:21.463         Status: Success (0x00)
+14:17:21.463         Handle: 256
+14:17:21.463         Address: AC:36:1B:XX:XX:XX (Hon Hai Precision Industry Co.,LTD)
+14:17:21.945 < ACL: Handle 256 flags 0x00 dlen 12                         #300 [hci0] 17098.944000
+14:17:21.945       L2CAP: Connection Request (0x02) ident 2 len 4
+14:17:21.945         PSM: 17 (0x0011)
+14:17:21.945         Source CID: 64
+14:17:21.994 < ACL: Handle 256 flags 0x00 dlen 12                         #322 [hci0] 17098.994000
+14:17:21.994       L2CAP: Connection Request (0x02) ident 6 len 4
+14:17:21.994         PSM: 1 (0x0001)
+14:17:21.994         Source CID: 66
