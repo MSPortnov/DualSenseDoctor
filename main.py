@@ -63,6 +63,13 @@ class Plugin:
         self._boot = asyncio.ensure_future(_start_engine())
 
     async def _unload(self):
+        boot = getattr(self, "_boot", None)
+        if ENGINE:
+            ENGINE.stopping = True
+        elif boot:
+            boot.cancel()
+        if boot:
+            await asyncio.gather(boot, return_exceptions=True)
         if ENGINE:
             await ENGINE.stop()
 

@@ -65,14 +65,19 @@ export function fetchAppDetails(appid: number, timeoutMs = 3000): Promise<any | 
   return new Promise((resolve) => {
     let done = false;
     let reg: any = null;
-    const finish = (v: any | null) => {
-      if (done) return;
-      done = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unregister = () => {
       try {
         reg?.unregister?.();
       } catch {
         /* ignore */
       }
+    };
+    const finish = (v: any | null) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      unregister();
       resolve(v);
     };
     try {
@@ -81,7 +86,8 @@ export function fetchAppDetails(appid: number, timeoutMs = 3000): Promise<any | 
       finish(null);
       return;
     }
-    setTimeout(() => finish(null), timeoutMs);
+    if (done) unregister(); // Steam can call back during registration.
+    else timer = setTimeout(() => finish(null), timeoutMs);
   });
 }
 
@@ -92,11 +98,27 @@ export function readLaunchOptions(d: any | null, g: GameInfo): string | null {
   return typeof v === "string" ? v : "";
 }
 
-export function setLaunchOptions(g: GameInfo, options: string): void {
+export async function confirmAppDetails(
+  appid: number,
+  matches: (details: any) => boolean,
+): Promise<boolean> {
+  for (let i = 0; i < 4; i++) {
+    if (typeof appDetailsStore !== "undefined") appDetailsStore?.RequestAppDetails?.(appid);
+    const d = await fetchAppDetails(appid);
+    if (d && matches(d)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+export async function setLaunchOptions(g: GameInfo, options: string): Promise<void> {
   if (g.isShortcut && typeof SteamClient.Apps.SetShortcutLaunchOptions === "function") {
-    SteamClient.Apps.SetShortcutLaunchOptions(g.appid, options);
+    await SteamClient.Apps.SetShortcutLaunchOptions(g.appid, options);
   } else {
-    SteamClient.Apps.SetAppLaunchOptions(g.appid, options);
+    await SteamClient.Apps.SetAppLaunchOptions(g.appid, options);
+  }
+  if (!await confirmAppDetails(g.appid, (d) => readLaunchOptions(d, g) === options)) {
+    throw new Error("Steam did not confirm the launch options");
   }
 }
 

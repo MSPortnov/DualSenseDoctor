@@ -96,7 +96,9 @@ class Store:
         return True
 
     def set_journal_enabled(self, enabled):
-        self.journal_enabled = bool(enabled)
+        if self.journal_enabled == enabled:
+            return
+        self.journal_enabled = enabled
         if self.journal_enabled:
             # Do not backfill sessions gathered while the journal was off.
             self.persist_from_id = self.next_id
@@ -116,11 +118,15 @@ class Store:
             return
         clean = [{k: v for k, v in s.items() if not k.startswith("_")}
                  for s in self.sessions
-                 if isinstance(s.get("id"), int) and s.get("id") >= self.persist_from_id]
+                 if self.should_persist_session(s)]
         try:
             atomic_write_json(self.sessions_path, clean, ensure_ascii=False)
         except (OSError, TypeError, ValueError) as e:
             log.error("save sessions: %s", e)
+
+    def should_persist_session(self, session):
+        sid = session.get("id")
+        return self.journal_enabled and isinstance(sid, int) and sid >= self.persist_from_id
 
     def elog(self, kind, msg):
         if not self.journal_enabled:

@@ -61,6 +61,8 @@ class Engine(Actions):
         self.btmon_demand = False   # btmon was started by the plugin (not by the "HCI trace" switch)
         self.btmon_arm_until = 0.0
         self._login1 = False
+        self._sleep_announced = False
+        self._resume_at_announcement = None
         self.dbus_parser = None
         self.recent = collections.deque(maxlen=500)
         self.unknown_handle_ts = collections.deque(maxlen=50)
@@ -83,7 +85,7 @@ class Engine(Actions):
         self.stopping = False
         self.pm_file = os.path.join(os.path.dirname(self.store.sessions_path), "adapter_pm.json")
         self.pm_orig = self.load_pm_orig()   # adapter power/control before the plugin set it to "on" (kept on disk: survives a crash)
-        self.report_busy = False
+        self.report_task = None
 
     # ------------------------------------------------------------ lifecycle
     async def start(self):
@@ -92,8 +94,10 @@ class Engine(Actions):
         self.elog("START", "plugin v%s settings=%s" % (VERSION, json.dumps(
             {k: v for k, v in self.cfg.items() if not k.startswith("_")})))
         self.store.save_settings()  # rewrites the file with the current keys only
-        self.ensure_adapter_awake(tr("старт", "start"))
+        self.sync_adapter_pm(tr("старт", "start"))
         await self.refresh_controllers()
+        if self.stopping:
+            return
         self.streams["kernel"] = LineStream(
             "kernel", ["journalctl", "-k", "-f", "-n", "0", "--no-pager", "-o", "short-iso-precise"],
             self.on_kernel_line)
@@ -131,11 +135,7 @@ class Engine(Actions):
 
     async def stop(self):
         self.stopping = True
-        for t in self.tasks:
-            t.cancel()
-        for t in list(self.sup_tasks.values()):
-            t.cancel()
-        pending = list(self.bg)
+        pending = set(self.tasks) | set(self.sup_tasks.values()) | self.bg
         for t in pending:
             t.cancel()
         if pending:
@@ -144,10 +144,13 @@ class Engine(Actions):
         for n in list(self.detached):  # safety net: whatever is still detached is attached now
             try:
                 ok, steps = await asyncio.get_running_loop().run_in_executor(None, hid_mod.sync_restore, n)
-                self.elog("FIX", tr("при выгрузке плагина драйвер возвращён: %s %s", "driver restored on unload: %s %s") % (n, "; ".join(steps)))
+                if ok or not hid_mod.device_present(n):
+                    self.detached.discard(n)
+                else:
+                    log.error("driver still detached on unload: %s", n)
+                self.elog("FIX" if ok else "WARN", "unload driver restore: %s %s" % (n, "; ".join(steps)))
             except Exception as e:
                 log.error("stop restore: %s", e)
-        self.detached.clear()
         self.restore_adapter_pm(tr("выгрузка плагина", "plugin unloaded"))
         for st in self.streams.values():
             await st.stop()
@@ -157,15 +160,21 @@ class Engine(Actions):
         self.store.elog(kind, msg)
 
     def feed_dbus(self, line):
-        """Lines of dbus-monitor: the Bluetooth parser gets everything except logind's sleep signal, which arms the HCI trace."""
+        """Use logind's sleep and wake notifications alongside the clock fallback."""
         if line and not line[0].isspace():  # a new D-Bus message starts
             self._login1 = line.startswith("signal ") and "member=PrepareForSleep" in line
             if self._login1:
                 return
         elif self._login1:
-            if "boolean true" in line:
+            if line.strip() == "boolean true":
+                self._sleep_announced = True
+                self._resume_at_announcement = self.last_resume_mono
                 self.snap_wakeup()   # the exact "before sleep" counters, so that the wake source is found right
                 self.arm_btmon("PrepareForSleep")
+            elif line.strip() == "boolean false" and self._sleep_announced:
+                self._sleep_announced = False
+                if self.last_resume_mono == self._resume_at_announcement:
+                    self.check_resume(confirmed=True)
             return
         if self.dbus_parser:
             self.dbus_parser.feed(line)
@@ -173,7 +182,7 @@ class Engine(Actions):
     def arm_btmon(self, why):
         """Start btmon shortly before sleep. The controller's request that the kernel drops arrives about 2.5 s BEFORE the
         kernel prints "PM: suspend exit", so a trace started on resume would be too late: it has to be running already."""
-        if not self.cfg["l2cap_answer"] or not which("btmon"):
+        if self.stopping or not self.cfg["l2cap_answer"] or not which("btmon"):
             return
         self.btmon_arm_until = mono() + BTMON_ARM_MAX_S
         if "btmon" in self.streams:
@@ -225,8 +234,8 @@ class Engine(Actions):
             cur = read(p).strip()
             if cur and cur != "on":
                 if self.pm_orig is None:
-                    self.pm_orig = cur   # what to put back when early connect is turned off or the plugin is unloaded
-                    self.save_pm_orig()
+                    atomic_write_json(self.pm_file, {"orig": cur})
+                    self.pm_orig = cur
                 write_sys(p, "on")
                 self.elog("FIX", tr("автосон Bluetooth-адаптера отключён (%s): было %s -> on", "Bluetooth adapter autosuspend turned off (%s): was %s -> on") % (why, cur))
             return cur
@@ -242,24 +251,28 @@ class Engine(Actions):
             return None
         return v if v == "auto" else None
 
-    def save_pm_orig(self):
-        try:
-            if self.pm_orig is None:
-                if os.path.exists(self.pm_file):
-                    os.remove(self.pm_file)
-            else:
-                atomic_write_json(self.pm_file, {"orig": self.pm_orig})
-        except OSError as e:
-            log.error("adapter_pm file: %s", e)
+    def sync_adapter_pm(self, why):
+        if self.cfg["early_connect"]:
+            self.ensure_adapter_awake(why)
+        else:
+            self.restore_adapter_pm(why)
 
     def restore_adapter_pm(self, why):
         """Put the adapter's autosuspend back to what it was before the plugin changed it."""
         if self.pm_orig is None:
             return
-        orig, self.pm_orig = self.pm_orig, None
-        self.save_pm_orig()
+        orig = self.pm_orig
         try:
-            write_sys(self.adapter_pm_path(), orig)
+            path = self.adapter_pm_path()
+            if read(path).strip() != orig:
+                write_sys(path, orig)
+            if read(path).strip() != orig:
+                raise OSError("power/control did not retain the original value")
+            try:
+                os.remove(self.pm_file)
+            except FileNotFoundError:
+                pass
+            self.pm_orig = None
             self.elog("FIX", tr("автосон адаптера возвращён (%s): %s", "adapter autosuspend restored (%s): %s") % (why, orig))
         except Exception as e:
             log.error("autosuspend restore: %s", e)
@@ -311,14 +324,17 @@ class Engine(Actions):
             snap[os.path.basename(d)] = (name, dev, ev, wk)
         return snap
 
-    def check_resume(self):
-        bt = time.clock_gettime(time.CLOCK_BOOTTIME)
-        mt = time.monotonic()
-        if self._last_bt is not None:
-            drift = (bt - self._last_bt) - (mt - self._last_mt)
-            if drift > 3.0:
-                self.on_resume(time.time(), drift)
-        self._last_bt, self._last_mt = bt, mt
+    def check_resume(self, confirmed=False):
+        drift = 0.0
+        clock = getattr(time, "CLOCK_BOOTTIME", None)
+        if clock is not None:
+            bt = time.clock_gettime(clock)
+            mt = time.monotonic()
+            if self._last_bt is not None:
+                drift = (bt - self._last_bt) - (mt - self._last_mt)
+            self._last_bt, self._last_mt = bt, mt
+        if confirmed or drift > 1.0:
+            self.on_resume(time.time(), max(drift, 0.0))
 
     def on_resume(self, now, slept):
         self.last_resume_mono = mono()
@@ -333,7 +349,7 @@ class Engine(Actions):
         self.last_wake_sources = srcs
         self.last_slept = slept
         self.wake_snap, self._snap_at = new, mono() + WAKE_SNAP_EVERY
-        self.ensure_adapter_awake(tr("после сна", "after sleep"))
+        self.sync_adapter_pm(tr("после сна", "after sleep"))
         irq = read("/sys/power/pm_wakeup_irq").strip()
         self.elog("RESUME", "slept=%.0fs wake_sources=%s pm_wakeup_irq=%s" % (slept, srcs or "?", irq or "-"))
 
@@ -346,7 +362,7 @@ class Engine(Actions):
         (dozens of sysfs files) are read only before sleep and as a rare fallback, not every second."""
         self.check_resume()
         self.check_report_request()
-        if mono() >= self._snap_at:
+        if not self._sleep_announced and mono() >= self._snap_at:
             self.snap_wakeup()
         if self.btmon_demand and mono() > self.btmon_arm_until:
             self.disarm_btmon()
@@ -365,20 +381,27 @@ class Engine(Actions):
 
     def check_report_request(self):
         """A report asked for by "deploy.sh fetch" (a file in the user's home): collect it like the button does."""
-        if self.report_busy or self.stopping or not report.take_request():
+        if self.stopping or not report.take_request():
             return
-        self.report_busy = True
         self.elog("REPORT", tr("отчёт запрошен командой deploy.sh fetch", "report requested by deploy.sh fetch"))
-        self.spawn(self._auto_report())
+        if not self.report_in_progress():
+            self.start_report()
 
-    async def _auto_report(self):
+    def report_in_progress(self):
+        return self.report_task is not None and not self.report_task.done()
+
+    def start_report(self):
+        self.report_task = self.spawn(self._collect_report())
+        # An SSH request has no RPC waiter. Retrieve errors there too.
+        self.report_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+
+    async def _collect_report(self):
         try:
-            await self.build_report()
+            return await report.build_report(self)
         except Exception as e:
-            log.error("auto report: %s", e)
+            log.error("report: %s", e)
             self.elog("REPORT", "failed: %s" % e)
-        finally:
-            self.report_busy = False
+            raise
 
     async def _poll_conn(self):
         for mac, c in list(self.ctrl.items()):
@@ -405,6 +428,8 @@ class Engine(Actions):
     async def refresh_controllers(self):
         rc, out = await run(["bluetoothctl", "devices", "Paired"], 8)
         for m in re.finditer(r"Device ([0-9A-Fa-f:]{17}) (.*)", out):
+            if self.stopping:
+                break
             await self.probe(m.group(1).upper(), m.group(2).strip())
 
     def ds_macs(self):
@@ -447,7 +472,8 @@ class Engine(Actions):
     def ev(self, s, text):
         rel = round(mono() - s["_mono"], 2)
         s["events"].append([rel, text])
-        self.elog("SESS%d" % s["id"], "+%.2fs %s" % (rel, text))
+        if self.store.should_persist_session(s):
+            self.elog("SESS%d" % s["id"], "+%.2fs %s" % (rel, text))
 
     def start_session(self, mac):
         if mac in self.cur:
@@ -637,14 +663,11 @@ class Engine(Actions):
         if key == "btmon":
             self.update_btmon()
         if key == "early_connect":   # the adapter is kept awake together with early connect
-            if value:
-                self.ensure_adapter_awake(tr("настройка", "setting"))
-            else:
-                self.restore_adapter_pm(tr("настройка", "setting"))
+            self.sync_adapter_pm(tr("настройка", "setting"))
         return self.public_settings()
 
     def dump_btmon(self, s):
-        if not self.store.journal_enabled:
+        if not self.store.should_persist_session(s):
             return
         ok = s["result"] in ("OK", "FIXED")
         buf = self.hot.get(s["id"], [])
@@ -670,7 +693,11 @@ class Engine(Actions):
         return stats.fix_log(self.sessions, limit)
 
     async def build_report(self):
-        return await report.build_report(self)
+        if self.stopping:
+            raise RuntimeError("DualSense Doctor is unloading")
+        if not self.report_in_progress():
+            self.start_report()
+        return await asyncio.shield(self.report_task)
 
     async def get_state(self):
         return {"version": VERSION, "settings": self.public_settings(), "fix_log": self.fix_log()}

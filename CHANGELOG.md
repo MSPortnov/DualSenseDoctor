@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.7
+- Wait for HID driver operations to finish on unload and retry a failed restore. Keep the original adapter autosuspend value until it has been restored and verified.
+- Detect short wakes through logind, with a clock fallback. Apply the same session boundary to the action journal and its saved HCI traces.
+- Use one Bluetooth report job for the panel and SSH, and report a write failure if either file could not be saved.
+- Verify Steam settings when applying a game setup and restore the previous values if a step fails.
+- Stage Decky installs before replacing the plugin, roll back if Decky fails to restart, and publish the ZIP checksum with the release asset.
+
 ## 0.10.6
 - Removed the clear-history control. On a plugin version change, saved sessions and Bluetooth event/trace logs are cleared while settings and adapter state are preserved.
 - Added an opt-in Action journal, off by default. When off, session history and detailed Bluetooth logs stay in memory only and are not saved; the latest result remains visible until the plugin restarts.

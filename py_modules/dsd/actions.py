@@ -14,6 +14,17 @@ from .i18n import tr
 from .util import dev_path, first_hci, mono, run, which
 
 
+async def finish_hid_write(func, hid):
+    """Keep the action lock held until a started sysfs operation has finished."""
+    loop = asyncio.get_running_loop()
+    worker = loop.run_in_executor(None, func, hid)
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await worker
+        raise
+
+
 class Actions:
     async def acl_handle(self, mac):
         if which("hcitool"):
@@ -35,7 +46,7 @@ class Actions:
         unloaded (the task is cancelled) or an error occurred; the restore is verified and retried."""
         cfg, mac = self.cfg, s["mac"]
         loop = asyncio.get_running_loop()
-        unbound = False
+        attempted = False
         try:
             await asyncio.sleep(STEAM_HOLD_DELAY)
             if self.cur.get(mac) is not s or not cfg["steam_pickup"]:
@@ -44,15 +55,19 @@ class Actions:
                 return  # a controller switched on at the desktop is not delayed: Steam is not busy waking up
             if not await loop.run_in_executor(None, hid_mod.steam_running):
                 return
-            s["steam_hold"] = True  # a preventive step, not a fix: it is not counted in fixes_applied
             async with self.action_lock:
-                unbound, steps = await loop.run_in_executor(None, hid_mod.sync_unbind, hid)
-                if unbound:
-                    self.detached.add(hid)
+                if self.stopping or self.cur.get(mac) is not s or hid in self.detached:
+                    return
+                s["steam_hold"] = True
+                self.detached.add(hid)
+                attempted = True
+                s["_hold"] = True
+                unbound, steps = await finish_hid_write(hid_mod.sync_unbind, hid)
+                if not unbound:
+                    self.detached.discard(hid)
             self.ev(s, tr("драйвер отключён, пока Steam занят после пробуждения: %s", "driver detached while Steam is busy after wake: %s") % "; ".join(steps))
             if not unbound:
                 return
-            s["_hold"] = True
             release_at = max(s["bind_at"], mono() - s["_mono"] + STEAM_BIND_MIN_HOLD)
             while self.cur.get(mac) is s and mono() - s["_mono"] < release_at:
                 await asyncio.sleep(0.1)
@@ -61,17 +76,19 @@ class Actions:
         except Exception as e:
             log.error("hold_hid: %s", e)
         finally:
-            if unbound:
+            if attempted:
                 try:
-                    async with self.action_lock:
-                        ok, steps = await loop.run_in_executor(None, hid_mod.sync_restore, hid)
-                    s["_bind_el"] = round(mono() - s["_mono"], 2)
-                    self.detached.discard(hid)
-                    self.ev(s, tr("драйвер возвращён: %s", "driver restored: %s") % "; ".join(steps))
-                    if not ok:
-                        self.elog("WARN", tr("драйвер не вернулся: %s", "the driver did not come back: %s") % hid)
-                        if not self.stopping and not hid_mod.device_present(hid):
-                            # the link is gone: ask the controller to connect again (it does not always come back by itself)
+                    if hid in self.detached:
+                        async with self.action_lock:
+                            ok, steps = await finish_hid_write(hid_mod.sync_restore, hid)
+                            missing = not ok and not hid_mod.device_present(hid)
+                            if ok or missing:
+                                self.detached.discard(hid)
+                        s["_bind_el"] = round(mono() - s["_mono"], 2)
+                        self.ev(s, tr("проверка возврата драйвера: %s", "driver restore check: %s") % "; ".join(steps))
+                        if not ok:
+                            self.elog("WARN", tr("драйвер не вернулся: %s", "the driver did not come back: %s") % hid)
+                        if missing and not self.stopping:
                             await self.do_bt_connect(s, "after-restore")
                 except Exception as e:
                     log.error("hold_hid bind: %s", e)
@@ -160,9 +177,16 @@ class Actions:
                 log.error("tune: %s", e)
 
     async def do_rebind(self, s, hid):
-        loop = asyncio.get_running_loop()
         async with self.action_lock:
-            steps = await loop.run_in_executor(None, hid_mod.sync_rebind, hid)
+            if self.stopping or s.get("_hold"):
+                return
+            try:
+                steps = await finish_hid_write(hid_mod.sync_rebind, hid)
+            finally:
+                if hid_mod.device_present(hid) and hid_mod.driver_of(hid) is None:
+                    self.detached.add(hid)
+                else:
+                    self.detached.discard(hid)
             self.ev(s, "REBIND %s: %s" % (hid, "; ".join(steps)))
             await asyncio.sleep(0.5)
 

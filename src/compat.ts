@@ -1,5 +1,6 @@
 // Proton (compatibility tool) handling. Steam API names are unverified: see the probe.
 import { callable } from "@decky/api";
+import { confirmAppDetails } from "./steam";
 
 export const isGeName = (name: string): boolean => /^GE-Proton/i.test(name);
 
@@ -80,19 +81,14 @@ export async function getCurrent(appid: number, details: any | null): Promise<st
   }
 }
 
-export function setTool(appid: number, name: string): { ok: boolean; err?: string } {
-  try {
-    if (typeof SteamClient?.Apps?.SpecifyCompatTool !== "function") {
-      return { ok: false, err: "SpecifyCompatTool is not available" };
-    }
-    SteamClient.Apps.SpecifyCompatTool(appid, name);
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, err: String(e?.message ?? e) };
+export async function setTool(appid: number, name: string): Promise<void> {
+  if (typeof SteamClient?.Apps?.SpecifyCompatTool !== "function") {
+    throw new Error("SpecifyCompatTool is not available");
   }
-}
-
-// empty name = no forced tool, Steam falls back to the default one from its settings
-export function clearTool(appid: number): { ok: boolean; err?: string } {
-  return setTool(appid, "");
+  await SteamClient.Apps.SpecifyCompatTool(appid, name);
+  const confirmed = await confirmAppDetails(appid, (d) => {
+    if (name) return readCurrent(d).name === name;
+    return typeof d.nCompatToolPriority === "number" && !isForced(d);
+  });
+  if (!confirmed) throw new Error("Steam did not confirm the Proton setting");
 }

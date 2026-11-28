@@ -1,9 +1,33 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import helpers  # noqa: F401
 from dsd import report
+
+
+class Collection(unittest.IsolatedAsyncioTestCase):
+    async def test_summary_failure_removes_new_archive_and_preserves_last_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "dualsense-doctor-20260101-123456-summary.txt"
+            old.write_text("previous report")
+            engine = mock.Mock(cfg={}, sessions=[], collect_diag=mock.AsyncMock(return_value=""))
+            engine.ds_macs.return_value = []
+            engine.read_wakeup.return_value = {}
+            engine.profile.return_value = "test"
+            engine.public_settings.return_value = {}
+            engine.store.events_path = str(root / "events.log")
+            engine.store.sessions_path = str(root / "sessions.json")
+            engine.store.settings_path = str(root / "settings.json")
+            with mock.patch.multiple(report, DATA_DIR=directory, USER_HOME=directory, PLUGIN_LOG_DIR=directory,
+                                     sh=mock.AsyncMock(return_value=""), journal_filtered=mock.AsyncMock(return_value="")), \
+                    mock.patch.object(report, "write_text_file", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    await report.build_report(engine)
+            self.assertEqual(list(root.iterdir()), [old])
 
 
 class Mask(unittest.TestCase):

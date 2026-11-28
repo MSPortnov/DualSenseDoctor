@@ -20,8 +20,6 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
   const [written, setWritten] = useState(""); // launch options last written to / read from Steam
   const [siMode, setSiMode] = useState<number | undefined>(undefined);
   const [tools, setTools] = useState<compat.CompatTool[]>([]);
-  const [currentTool, setCurrentTool] = useState("");
-  const [forced, setForced] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [uiStale, setUiStale] = useState(false);
@@ -29,11 +27,14 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
   const selected = VARIANTS.find((v) => v.id === selectedId) ?? null;
 
   // re-read what Steam currently reports (Steam Input can be reset behind our back)
-  const refresh = async () => {
+  const refresh = async (reloadOptions = false) => {
     const d = await steam.fetchAppDetails(game.appid);
     setSiMode(si.getSteamInputMode(d));
-    setCurrentTool(compat.readCurrent(d).name);
-    setForced(compat.isForced(d));
+    const actual = steam.readLaunchOptions(d, game);
+    if (reloadOptions && actual !== null) {
+      setText(actual);
+      setWritten(actual);
+    }
   };
 
   useEffect(() => {
@@ -41,8 +42,6 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
     (async () => {
       const d = await steam.fetchAppDetails(game.appid);
       const lo = steam.readLaunchOptions(d, game) ?? "";
-      const cur = compat.readCurrent(d);
-      const curName = cur.name || (await compat.getCurrent(game.appid, null));
       const list = await compat.listTools(game.appid);
       const mode = si.getSteamInputMode(d);
       if (!alive) return;
@@ -54,8 +53,6 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
       setWritten(lo);
       setSiMode(mode);
       setTools(list);
-      setCurrentTool(curName);
-      setForced(compat.isForced(d));
       setSelectedId(rec?.selected ?? match?.id ?? null);
       setLoaded(true);
       await store.update((dd) => {
@@ -75,8 +72,17 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
     if (!v || busy) return;
     setBusy(true);
     setNotice("");
+    const rollback: (() => Promise<void>)[] = [];
     try {
-      // 1. Proton, silently: GE where the setup needs it, otherwise the system default
+      const details = await steam.fetchAppDetails(game.appid);
+      const oldOptions = steam.readLaunchOptions(details, game);
+      const oldMode = si.getSteamInputMode(details);
+      if (!details || oldOptions === null || oldMode === undefined) {
+        throw new Error(t("preset.readFailed"));
+      }
+      const currentTool = await compat.getCurrent(game.appid, details);
+      const forced = compat.isForced(details);
+      let tool: string | undefined;
       if (v.minGe) {
         if (!compat.isGeAtLeast(currentTool, v.minGe)) {
           const ge = compat.newestGe(tools, v.minGe);
@@ -84,33 +90,54 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
             setNotice(t("proton.missing", { v: fmtVer(v.minGe) }));
             return;
           }
-          const r = compat.setTool(game.appid, ge.name);
-          if (!r.ok) {
-            setNotice(t("proton.failed", { err: r.err ?? "?" }));
-            return;
-          }
+          tool = ge.name;
         }
       } else if (compat.isGeName(currentTool) || forced) {
-        compat.clearTool(game.appid);
+        tool = "";
       }
-      // 2. launch options
-      steam.setLaunchOptions(game, v.options);
+      if (tool !== undefined) {
+        if ((currentTool && typeof details.nCompatToolPriority !== "number") || (forced && !currentTool)) {
+          throw new Error(t("preset.readFailed"));
+        }
+        rollback.push(() => compat.setTool(game.appid, forced ? currentTool : ""));
+        await compat.setTool(game.appid, tool);
+      }
+      if (oldOptions !== v.options) {
+        rollback.push(() => steam.setLaunchOptions(game, oldOptions));
+        await steam.setLaunchOptions(game, v.options);
+      }
+      if (oldMode !== (v.siOn ? si.SI_ON : si.SI_OFF)) {
+        rollback.push(async () => {
+          const restored = await si.setMode(game.appid, oldMode);
+          if (!restored.ok) throw new Error("Steam Input rollback failed");
+          setUiStale(restored.uiStale);
+        });
+      }
+      const r = await si.setEnabled(game.appid, v.siOn);
+      setUiStale(r.uiStale);
+      if (!r.ok) throw new Error(t("si.failed"));
+      setSiMode(v.siOn ? si.SI_ON : si.SI_OFF);
       setText(v.options);
       setWritten(v.options);
-      // 3. Steam Input, last
-      const r = await si.setEnabled(game.appid, v.siOn);
-      const ok = r.ok;
-      setUiStale(r.uiStale);
-      await refresh();
-      if (!ok) {
-        setNotice(t("si.failed"));
-        return;
-      }
       setSelectedId(v.id);
       await store.update((d) => {
         store.ensureRecord(d, game.appid, game.name).selected = v.id;
       });
       setNotice(t("applied", { name: t(v.labelKey) }));
+    } catch (e) {
+      let restored = true;
+      for (const undo of rollback.reverse()) {
+        try {
+          await undo();
+        } catch (error) {
+          console.error("[DSD] preset rollback failed", error);
+          restored = false;
+        }
+      }
+      if (rollback.length) await refresh(true);
+      if (!restored) setSelectedId(null);
+      const reason = e instanceof Error ? e.message : String(e);
+      setNotice(t(restored ? "preset.failed" : "preset.partial", { reason }));
     } finally {
       setBusy(false);
     }
@@ -124,7 +151,7 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
     try {
       // only write launch options if they changed, then set Steam Input as the setup needs
       if (opts !== written.trim()) {
-        steam.setLaunchOptions(game, opts);
+        await steam.setLaunchOptions(game, opts);
         setWritten(opts);
       }
       let ok = true;
@@ -141,6 +168,8 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
       }
       nav.suppressReopen(); // the page closes because the game starts: do not pop the plugin panel up
       steam.runGame(game);
+    } catch (e) {
+      setNotice(t("game.launchFailed", { reason: e instanceof Error ? e.message : String(e) }));
     } finally {
       setBusy(false);
     }
@@ -197,7 +226,7 @@ export default function GameView({ game }: { game: steam.GameInfo }) {
           <TextField
             label={t("game.options")}
             value={text}
-            onChange={(e: any) => setText(e.target.value)}
+            onChange={(e: any) => { if (!busy) setText(e.target.value); }}
           />
         </PanelSectionRow>
         {text.trim() !== "" && !text.includes("%command%") && (

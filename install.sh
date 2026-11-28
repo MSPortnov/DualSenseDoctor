@@ -23,12 +23,9 @@ python3 - "$TMP" <<'PY'
 import sys, zipfile
 zipfile.ZipFile(sys.argv[1] + "/DualSenseDoctor.zip").extractall(sys.argv[1] + "/x")
 PY
-[ -f "$TMP/x/DualSense Doctor/plugin.json" ] || { echo "Unexpected archive layout, aborting."; exit 1; }
+[ -f "$TMP/x/DualSense Doctor/install-plugin.sh" ] || { echo "Unexpected archive layout, aborting."; exit 1; }
 
 echo ">> Installing to $DEST (the sudo password may be asked)"
-sudo rm -rf "$DEST"
-sudo mkdir -p "$(dirname "$DEST")"
-sudo cp -r "$TMP/x/DualSense Doctor" "$DEST"
-sudo systemctl restart plugin_loader
+sudo bash "$TMP/x/DualSense Doctor/install-plugin.sh" "$TMP/x/DualSense Doctor" "$(dirname "$DEST")"
 echo ">> Done. Installed version: $(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$DEST/package.json" | head -1)"
 echo ">> If the Steam Store opens blank right after an update, open it once more: Steam reloads its interface after Decky restarts, it is not related to the plugin."

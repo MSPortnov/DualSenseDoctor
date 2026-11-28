@@ -64,8 +64,11 @@ interface SetResult {
   uiStale: boolean; // the Steam UI could not be refreshed (restart of the interface needed)
 }
 
-export async function setEnabled(appid: number, wantOn: boolean): Promise<SetResult> {
-  const target = wantOn ? SI_ON : SI_OFF;
+export function setEnabled(appid: number, wantOn: boolean): Promise<SetResult> {
+  return setMode(appid, wantOn ? SI_ON : SI_OFF);
+}
+
+export async function setMode(appid: number, target: number): Promise<SetResult> {
   const value = await readMode(appid);
   if (value === undefined) return { ok: false, uiStale: false };
 
@@ -75,7 +78,7 @@ export async function setEnabled(appid: number, wantOn: boolean): Promise<SetRes
   const A = SteamClient.Apps;
   const I = SteamClient.Input;
   try {
-    await A.SetThirdPartyControllerConfiguration(appid, SI_DEFAULT);
+    if (target !== SI_DEFAULT) await A.SetThirdPartyControllerConfiguration(appid, SI_DEFAULT);
     await A.SetThirdPartyControllerConfiguration(appid, target);
   } catch {
     return { ok: false, uiStale: false };

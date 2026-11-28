@@ -4,9 +4,9 @@ import json
 import os
 import pwd
 import re
-import shutil
 import stat
 import tarfile
+import tempfile
 import time
 
 from .config import DATA_DIR, DECKY_USER, log, PLUGIN_LOG_DIR, REPORT_REQUEST_NAME, USER_HOME, VERSION
@@ -80,15 +80,33 @@ def new_report_paths(out_dir, name):
 
 def write_text_file(path, text):
     fd = create_file(path)
-    with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
-        f.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+    except Exception:
+        discard_output(path)
+        raise
 
 
 def write_tar(path, work_dir, arcname):
     fd = create_file(path)
-    with os.fdopen(fd, "wb") as raw:
-        with tarfile.open(fileobj=raw, mode="w:gz") as tf:
-            tf.add(work_dir, arcname=arcname)
+    try:
+        with os.fdopen(fd, "wb") as raw:
+            with tarfile.open(fileobj=raw, mode="w:gz") as tf:
+                tf.add(work_dir, arcname=arcname)
+            return round(raw.tell() / 1024)
+    except Exception:
+        discard_output(path)
+        raise
+
+
+def discard_output(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.error("remove incomplete report %s: %s", path, e)
 
 
 def remove_old_reports(out_dir, keep=()):
@@ -124,8 +142,11 @@ async def sh(cmds, timeout=10):
 async def build_report(eng):
     ts = time.strftime("%Y%m%d-%H%M%S")
     name = "dualsense-doctor-%s" % ts
-    work = os.path.join(DATA_DIR, "report_tmp", name)
-    os.makedirs(work, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="report-", dir=DATA_DIR) as work:
+        return await collect_report(eng, ts, name, work)
+
+
+async def collect_report(eng, ts, name, work):
 
     def wf(rel, text):
         p = os.path.join(work, rel)
@@ -213,17 +234,13 @@ async def build_report(eng):
 
     out_dir = USER_HOME if os.path.isdir(USER_HOME) else DATA_DIR
     tar_path, sum_path = new_report_paths(out_dir, name)
-    written = False
+    size_kb = write_tar(tar_path, work, name)
     try:
-        write_tar(tar_path, work, name)
         write_text_file(sum_path, summary_text)
-        written = True
-    except Exception as e:
-        eng.elog("REPORT", "write failed: %s" % e)
-        log.error("report write: %s", e)
-    shutil.rmtree(os.path.join(DATA_DIR, "report_tmp"), ignore_errors=True)
-    removed = remove_old_reports(out_dir, keep=(tar_path, sum_path)) if written else 0
-    eng.last_report = {"tar": tar_path, "summary": sum_path,
-                       "size_kb": round(os.path.getsize(tar_path) / 1024) if os.path.exists(tar_path) else 0}
+    except Exception:
+        discard_output(tar_path)
+        raise
+    removed = remove_old_reports(out_dir, keep=(tar_path, sum_path))
+    eng.last_report = {"tar": tar_path, "summary": sum_path, "size_kb": size_kb}
     eng.elog("REPORT", json.dumps(eng.last_report) + " old removed: %d" % removed)
     return eng.last_report

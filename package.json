@@ -1,6 +1,6 @@
 {
   "name": "dualsense-doctor",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "description": "DualSense: per-game launch options and Bluetooth connection fixes after sleep (Decky Loader plugin)",
   "author": "MSPortnov",
   "homepage": "https://github.com/MSPortnov/DualSenseDoctor#readme",

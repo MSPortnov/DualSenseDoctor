@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import unittest
 from unittest import mock
@@ -130,6 +131,42 @@ class Hold(Base):
         self.e.detached.add(HID)   # as if some task had lost track of it
         await self.e.stop()
         self.assertEqual(self.calls.names(), ["restore"])
+
+    async def test_unload_waits_for_unbind_in_progress(self):
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        self.e.cur[MAC] = make_session(bind_at=5.0)
+
+        def unbind(hid):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(3):
+                raise TimeoutError("test never released unbind")
+            return self.calls.unbind(hid)
+
+        with mock.patch.object(hid_mod, "sync_unbind", unbind):
+            self.e.spawn(self.e._hold_hid(self.e.cur[MAC], HID))
+            await asyncio.wait_for(entered.wait(), 2)
+            stop = asyncio.create_task(self.e.stop())
+            try:
+                await asyncio.sleep(0)
+                self.assertFalse(stop.done())
+                self.assertEqual(self.calls.names(), [])
+            finally:
+                release.set()
+            await asyncio.wait_for(stop, 2)
+        self.assertEqual(self.calls.names(), ["unbind", "restore"])
+        self.assertEqual(self.e.detached, set())
+
+    async def test_unload_retries_a_failed_restore(self):
+        self.e.cur[MAC] = make_session(bind_at=0.1)
+        results = [(False, ["failed"]), (True, ["restored"])]
+        with mock.patch.object(hid_mod, "sync_restore", side_effect=results) as restore:
+            await self.e._hold_hid(self.e.cur[MAC], HID)
+            self.assertIn(HID, self.e.detached)
+            await self.e.stop()
+        self.assertEqual(restore.call_count, 2)
+        self.assertNotIn(HID, self.e.detached)
 
     async def test_failed_restore_with_lost_link_asks_for_a_connect(self):
         self.calls.restore_ok = False
@@ -289,6 +326,30 @@ class Clock(Base):
             t.cancel()
         await asyncio.gather(*self.e.sup_tasks.values(), return_exceptions=True)
 
+    async def test_logind_handles_short_wake_without_counting_it_twice(self):
+        signal = "signal path=/org/freedesktop/login1; member=PrepareForSleep"
+        self.e.cfg["l2cap_answer"] = False
+        for paused in (0.5, 2.0):
+            self.e._last_bt, self.e._last_mt = 100.0, 100.0
+            with mock.patch.object(eng_mod.time, "CLOCK_BOOTTIME", 99, create=True), \
+                    mock.patch.object(eng_mod.time, "clock_gettime", side_effect=[101.0 + paused, 102.0 + paused]), \
+                    mock.patch.object(eng_mod.time, "monotonic", side_effect=[101.0, 102.0]), \
+                    mock.patch.object(eng_mod, "mono", return_value=101.0), \
+                    mock.patch.object(self.e, "on_resume") as resume:
+                def record_resume(now, duration):
+                    self.e.last_resume_mono = 101.0
+                resume.side_effect = record_resume
+                self.e.last_resume_mono = None
+                self.e.feed_dbus(signal)
+                self.e.feed_dbus("   boolean true")
+                if paused > 1:
+                    self.e.check_resume()
+                self.e.feed_dbus(signal)
+                self.e.feed_dbus("   boolean false")
+                self.e.check_resume()
+                resume.assert_called_once()
+                self.assertAlmostEqual(resume.call_args.args[1], paused)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -385,6 +446,20 @@ class Adapter(Base):
             self.assertEqual(self.get(), "auto")
             self.assertIsNone(eng_mod.Engine().pm_orig)   # nothing left on disk after the restore
 
+    async def test_restore_failure_keeps_saved_value_for_retry(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("auto")
+            self.e.ensure_adapter_awake("t")
+            with mock.patch.object(eng_mod, "write_sys", side_effect=OSError("unavailable")), \
+                    self.assertLogs("dsd", "ERROR"):
+                self.e.restore_adapter_pm("test")
+            self.assertEqual(self.get(), "on")
+            self.assertEqual(self.e.load_pm_orig(), "auto")
+            self.e.restore_adapter_pm("retry")
+            self.assertEqual(self.get(), "auto")
+            self.assertIsNone(self.e.load_pm_orig())
+
     async def test_damaged_file_is_ignored(self):
         open(self.e.pm_file, "w").write("{not json")
         self.assertIsNone(self.e.load_pm_orig())
@@ -394,18 +469,14 @@ class Adapter(Base):
 
 class ReportRequest(Base):
     async def test_request_starts_one_report(self):
-        calls = []
-
-        async def fake():
-            calls.append(1)
-            return {}
-        self.e.build_report = fake
-        with mock.patch.object(eng_mod.report, "take_request", lambda: True):
+        build = mock.AsyncMock(return_value={"size_kb": 1})
+        with mock.patch.object(eng_mod.report, "take_request", side_effect=[True, True]), \
+                mock.patch.object(eng_mod.report, "build_report", build):
             self.e.check_report_request()
-            self.e.check_report_request()   # a report is already being made
-            await asyncio.gather(*list(self.e.bg))
-        self.assertEqual(calls, [1])
-        self.assertFalse(self.e.report_busy)
+            self.e.check_report_request()
+            self.assertEqual(await self.e.build_report(), {"size_kb": 1})
+            build.assert_awaited_once_with(self.e)
+        self.assertFalse(self.e.report_in_progress())
 
     async def test_no_request_no_report(self):
         with mock.patch.object(eng_mod.report, "take_request", lambda: False):
@@ -413,13 +484,35 @@ class ReportRequest(Base):
         self.assertEqual(len(self.e.bg), 0)
 
     async def test_failed_report_frees_the_flag(self):
-        async def boom():
-            raise OSError("disk full")
-        self.e.build_report = boom
-        with mock.patch.object(eng_mod.report, "take_request", lambda: True):
+        build = mock.AsyncMock(side_effect=OSError("disk full"))
+        with mock.patch.object(eng_mod.report, "take_request", lambda: True), \
+                mock.patch.object(eng_mod.report, "build_report", build), self.assertLogs("dsd", "ERROR"):
             self.e.check_report_request()
-            await asyncio.gather(*list(self.e.bg))
-        self.assertFalse(self.e.report_busy)
+            with self.assertRaisesRegex(OSError, "disk full"):
+                await self.e.build_report()
+        self.assertFalse(self.e.report_in_progress())
+
+
+class Journal(Base):
+    async def test_toggle_does_not_save_old_session_trace_or_events(self):
+        from pathlib import Path
+        await self.e.set_setting("action_journal", True)
+        old = make_session(result="OK", iso="2026-11-28")
+        new = make_session(id=2, result="OK", iso="2026-11-28")
+        self.e.store.next_id = 2
+        await self.e.set_setting("action_journal", False)
+        await self.e.set_setting("action_journal", True)
+        self.e.sessions.extend([old, new])
+        data_dir = Path(self.e.store.sessions_path).parent
+        with mock.patch.object(eng_mod, "DATA_DIR", str(data_dir)):
+            for session in (old, new):
+                self.e.hot[session["id"]] = [(mono(), "trace")]
+                self.e.ev(session, "session event")
+                self.e.dump_btmon(session)
+        self.e.store.save_sessions()
+        self.assertEqual([p.name for p in data_dir.glob("btmon_*")], ["btmon_0002_OK.txt"])
+        self.assertNotIn("[SESS1]", Path(self.e.store.events_path).read_text())
+        self.assertNotIn('"id": 1', Path(self.e.store.sessions_path).read_text())
 
 
 class Tick(Base):

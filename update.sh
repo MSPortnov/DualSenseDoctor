@@ -47,12 +47,7 @@ pnpm run build
 
 # 5. Install into Decky and restart
 say ">> установка в $DEST" ">> installing to $DEST"
-sudo rm -rf "$DEST"
-sudo mkdir -p "$DEST/dist"
-sudo cp plugin.json package.json main.py LICENSE "$DEST/"
-sudo cp -r dist/* "$DEST/dist/"
-sudo cp -r py_modules "$DEST/"
+sudo bash ./install-plugin.sh "$PWD" "$(dirname "$DEST")"
 rm -f "$HOME"/dualsense-doctor-[0-9]*-summary.txt "$HOME"/dualsense-doctor-[0-9]*.tar.gz  # old reports
-sudo systemctl restart plugin_loader
 say ">> Готово. Quick Access Menu (кнопка ...) -> DualSense Doctor." ">> Done. Quick Access Menu (... button) -> DualSense Doctor."
 say ">> Если сразу после обновления магазин Steam откроется пустым, откройте его ещё раз: это Steam перезагружает интерфейс после перезапуска Decky, к плагину не относится." ">> If the Steam Store opens blank right after an update, open it once more: Steam reloads its interface after Decky restarts, it is not related to the plugin."
