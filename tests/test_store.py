@@ -78,6 +78,65 @@ class Disk(unittest.TestCase):
         st.save_settings()
         self.assertEqual(store.Store().settings["steam_bind_at"], 4.0)
 
+    def test_journal_is_off_by_default_and_does_not_write_history(self):
+        st = store.Store()
+        self.assertFalse(st.journal_enabled)
+        st.sessions.append({"id": 1, "result": "FIXED"})
+        st.save_sessions()
+        st.elog("TEST", "not persisted")
+        self.assertFalse(os.path.exists(st.sessions_path))
+        self.assertFalse(os.path.exists(st.events_path))
+
+    def test_enabling_journal_only_persists_new_sessions(self):
+        st = store.Store()
+        st.sessions.append({"id": 1, "result": "OK"})
+        st.next_id = 2
+        st.set_journal_enabled(True)
+        st.sessions.append({"id": 2, "result": "FIXED"})
+        st.save_sessions()
+        with open(st.sessions_path) as f:
+            self.assertEqual([s["id"] for s in json.load(f)], [2])
+
+    def test_disabling_journal_deletes_saved_history_but_keeps_memory(self):
+        st = store.Store()
+        st.set_journal_enabled(True)
+        st.sessions.append({"id": 1, "result": "FIXED"})
+        st.save_sessions()
+        st.elog("TEST", "persisted")
+        trace = os.path.join(self.dir, "btmon_0001_OK.txt")
+        with open(trace, "w") as f:
+            f.write("trace")
+        st.set_journal_enabled(False)
+        self.assertEqual(st.sessions, [{"id": 1, "result": "FIXED"}])
+        self.assertFalse(os.path.exists(st.sessions_path))
+        self.assertFalse(os.path.exists(st.events_path))
+        self.assertFalse(os.path.exists(trace))
+
+    def test_version_change_clears_history_once_and_keeps_settings(self):
+        st = store.Store()
+        st.settings["early_connect"] = False
+        st.save_settings()
+        st.set_journal_enabled(True)
+        st.sessions.append({"id": 1, "result": "FIXED"})
+        st.next_id = 2
+        st.save_sessions()
+        st.elog("TEST", "old version")
+        trace = os.path.join(self.dir, "btmon_0001_OK.txt")
+        with open(trace, "w") as f:
+            f.write("trace")
+        with open(os.path.join(self.dir, "adapter_pm.json"), "w") as f:
+            f.write('{"orig":"auto"}')
+
+        self.assertTrue(st.ensure_history_version("0.10.6"))
+        self.assertFalse(st.ensure_history_version("0.10.6"))
+        self.assertEqual(st.sessions, [])
+        self.assertEqual(st.next_id, 1)
+        self.assertFalse(os.path.exists(st.sessions_path))
+        self.assertFalse(os.path.exists(st.events_path))
+        self.assertFalse(os.path.exists(trace))
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "adapter_pm.json")))
+        self.assertFalse(store.Store().settings["early_connect"])
+
 
 if __name__ == "__main__":
     unittest.main()

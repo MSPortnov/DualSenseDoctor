@@ -46,6 +46,11 @@ KERN_RE = re.compile(r"bluetooth|hci\d|hid|playstation|uhid|PM: |btusb|btintel|"
 class Engine(Actions):
     def __init__(self):
         self.store = Store()
+        self.store.ensure_history_version(VERSION)
+        if not self.store.journal_enabled:
+            self.store.clear_persisted_history()
+            self.store.sessions.clear()
+            self.store.next_id = 1
         self.cfg = self.store.settings
         i18n.set_lang(self.cfg.get("lang"))
         self.sessions = self.store.sessions
@@ -622,6 +627,11 @@ class Engine(Actions):
         if not isinstance(DEFAULTS[key], bool):
             return self.public_settings()  # only the on/off switches are changed here (the language has its own call)
         self.cfg[key] = bool(value)
+        if key == "action_journal":
+            self.store.set_journal_enabled(self.cfg[key])
+            self.store.save_settings()
+            self.elog("SETTING", "%s=%s" % (key, self.cfg[key]))
+            return self.public_settings()
         self.elog("SETTING", "%s=%s" % (key, value))
         self.store.save_settings()
         if key == "btmon":
@@ -634,6 +644,8 @@ class Engine(Actions):
         return self.public_settings()
 
     def dump_btmon(self, s):
+        if not self.store.journal_enabled:
+            return
         ok = s["result"] in ("OK", "FIXED")
         buf = self.hot.get(s["id"], [])
         if not buf:
@@ -662,14 +674,3 @@ class Engine(Actions):
 
     async def get_state(self):
         return {"version": VERSION, "settings": self.public_settings(), "fix_log": self.fix_log()}
-
-    async def clear_data(self):
-        self.sessions.clear()
-        self.store.save_sessions()
-        for f in glob.glob(os.path.join(DATA_DIR, "btmon_*.txt")):
-            os.remove(f)
-        for f in (self.store.events_path, self.store.events_path + ".1"):
-            if os.path.exists(f):
-                os.remove(f)
-        self.elog("CLEAR", tr("данные очищены", "data cleared"))
-        return True

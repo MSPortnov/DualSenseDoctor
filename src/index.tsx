@@ -114,13 +114,11 @@ type State = {
   version: string;
   settings: Record<string, any>;
   fix_log: LogEntry[];
-  host_ip?: string;
 };
 
 const getState = callable<[], State>("get_state");
 const setSetting = callable<[string, any], Record<string, any>>("set_setting");
 const buildReport = callable<[], any>("build_report");
-const clearData = callable<[], boolean>("clear_data");
 
 // A focusable row: otherwise Steam's gamepad cursor skips it and the page does not scroll to it
 const FOCUS: any = { focusable: true };
@@ -229,12 +227,28 @@ function DoctorSection() {
     mounted.current = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      if (!mounted.current || document.visibilityState === "hidden") return;
       await refresh();
-      if (mounted.current) timer = setTimeout(poll, 2000);
+      if (mounted.current && document.visibilityState === "visible") {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(poll, 2000);
+      }
     };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+      } else {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        void poll();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     void poll();
     return () => {
       mounted.current = false;
+      document.removeEventListener("visibilitychange", onVisibility);
       if (timer) clearTimeout(timer);
     };
   }, []);
@@ -270,22 +284,12 @@ function DoctorSection() {
             description={err ? err.slice(-600) : undefined}
           />
         </PanelSectionRow>
-        {fails >= 3 && (
-          <PanelSectionRow>
-            <Field
-              {...FOCUS}
-              label={t("bt.whereCause")}
-              description="~/homebrew/logs/DualSense Doctor/ and sudo journalctl -u plugin_loader -n 80"
-            />
-          </PanelSectionRow>
-        )}
       </PanelSection>
     );
   }
 
   const s = st.settings;
   const shown = st.fix_log.slice(0, expanded ? 3 : 1);
-  const addr = st.host_ip || t("bt.addr");
   return (
     <>
       <PanelSection title={t("doctor.bt")}>
@@ -357,6 +361,14 @@ function DoctorSection() {
                 onChange={(v: boolean) => set("btmon", v)}
               />
             </PanelSectionRow>
+            <PanelSectionRow>
+              <ToggleField
+                label={t("bt.journal")}
+                description={t("bt.journal.desc")}
+                checked={!!s.action_journal}
+                onChange={(v: boolean) => set("action_journal", v)}
+              />
+            </PanelSectionRow>
           </PanelSection>
 
           <PanelSection title={t("bt.tools")}>
@@ -375,20 +387,6 @@ function DoctorSection() {
                 {t("bt.report")}
               </ButtonItem>
             </PanelSectionRow>
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                disabled={busy}
-                onClick={() =>
-                  act(async () => {
-                    await clearData();
-                    return t("bt.cleared");
-                  })
-                }
-              >
-                {t("bt.clear")}
-              </ButtonItem>
-            </PanelSectionRow>
             {msg && (
               <PanelSectionRow>
                 <Field {...FOCUS} label={t("bt.result")} description={msg} />
@@ -396,25 +394,6 @@ function DoctorSection() {
             )}
           </PanelSection>
 
-          <PanelSection title={t("bt.where")}>
-            <PanelSectionRow>
-              <Field {...FOCUS} label={t("bt.where.deck")} description={t("bt.where.deck.desc")} />
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <Field
-                {...FOCUS}
-                label={t("bt.where.mac")}
-                description={"bash deploy.sh " + addr + " fetch"}
-              />
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <Field
-                {...FOCUS}
-                label={t("bt.where.logs")}
-                description={"bash deploy.sh " + addr + " logs"}
-              />
-            </PanelSectionRow>
-          </PanelSection>
         </>
       )}
     </>

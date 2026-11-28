@@ -83,7 +83,7 @@ Each new report replaces the old ones (and `deploy.sh` removes old reports on th
 
 ## Settings
 
-Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect, which also keeps the adapter awake; answer to the controller; Steam pickup with the driver return time; HCI trace). The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
+Doctor works out of the box. The Bluetooth settings section has switches for each fix (early connect, which also keeps the adapter awake; answer to the controller; Steam pickup with the driver return time; HCI trace) and the optional Action journal. The journal is off by default; while off, session statistics and detailed Bluetooth events stay in memory and are not saved. The latest result remains visible until the plugin restarts. Turning the journal off deletes saved history. A plugin version change clears saved statistics and Bluetooth traces while preserving settings and adapter state. The language (Auto follows Steam, English or Русский) is chosen at the bottom of the panel. It is used for the interface, for the plugin's own log messages (`events.log`, session notes) and for the Bluetooth report, so a report is written in the language you picked. The helper scripts print their messages in the system language.
 
 ## License
 

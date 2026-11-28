@@ -1,4 +1,5 @@
 """Settings, sessions and the event log on disk."""
+import glob
 import json
 import os
 
@@ -46,6 +47,7 @@ class Store:
         self.settings_path = os.path.join(SETTINGS_DIR, "settings.json")
         self.sessions_path = os.path.join(DATA_DIR, "sessions.json")
         self.events_path = os.path.join(DATA_DIR, "events.log")
+        self.history_version_path = os.path.join(DATA_DIR, "history_version.json")
         try:
             with open(self.settings_path) as f:
                 saved = json.load(f)
@@ -59,6 +61,47 @@ class Store:
         except (OSError, ValueError):
             self.sessions = []
         self.next_id = max([s.get("id", 0) for s in self.sessions if isinstance(s.get("id", 0), int)] + [0]) + 1
+        self.journal_enabled = bool(self.settings["action_journal"])
+        self.persist_from_id = 1 if self.journal_enabled else self.next_id
+
+    def clear_persisted_history(self):
+        """Remove saved session statistics and Bluetooth action logs, preserving settings and adapter state."""
+        paths = [self.sessions_path, self.events_path, self.events_path + ".1"]
+        paths.extend(glob.glob(os.path.join(DATA_DIR, "btmon_*.txt")))
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.error("remove history %s: %s", path, e)
+
+    def ensure_history_version(self, version):
+        """Start a fresh on-disk history when the plugin version changes; keep settings intact."""
+        try:
+            with open(self.history_version_path) as f:
+                saved = json.load(f)
+            if isinstance(saved, dict) and saved.get("version") == version:
+                return False
+        except (OSError, ValueError):
+            pass
+        self.clear_persisted_history()
+        self.sessions.clear()
+        self.next_id = 1
+        self.persist_from_id = 1
+        try:
+            atomic_write_json(self.history_version_path, {"version": version})
+        except (OSError, TypeError, ValueError) as e:
+            log.error("save history version: %s", e)
+        return True
+
+    def set_journal_enabled(self, enabled):
+        self.journal_enabled = bool(enabled)
+        if self.journal_enabled:
+            # Do not backfill sessions gathered while the journal was off.
+            self.persist_from_id = self.next_id
+        else:
+            self.clear_persisted_history()
 
     def save_settings(self):
         try:
@@ -69,13 +112,19 @@ class Store:
     def save_sessions(self):
         if len(self.sessions) > MAX_SESSIONS:
             del self.sessions[:-MAX_SESSIONS]
-        clean = [{k: v for k, v in s.items() if not k.startswith("_")} for s in self.sessions]
+        if not self.journal_enabled:
+            return
+        clean = [{k: v for k, v in s.items() if not k.startswith("_")}
+                 for s in self.sessions
+                 if isinstance(s.get("id"), int) and s.get("id") >= self.persist_from_id]
         try:
             atomic_write_json(self.sessions_path, clean, ensure_ascii=False)
         except (OSError, TypeError, ValueError) as e:
             log.error("save sessions: %s", e)
 
     def elog(self, kind, msg):
+        if not self.journal_enabled:
+            return
         try:
             if os.path.exists(self.events_path) and os.path.getsize(self.events_path) > 4_000_000:
                 os.replace(self.events_path, self.events_path + ".1")

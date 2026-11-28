@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.6
+- Removed the clear-history control. On a plugin version change, saved sessions and Bluetooth event/trace logs are cleared while settings and adapter state are preserved.
+- Added an opt-in Action journal, off by default. When off, session history and detailed Bluetooth logs stay in memory only and are not saved; the latest result remains visible until the plugin restarts.
+- Removed the Mac download and Decky/plugin log-location hints from the interface. The status endpoint no longer resolves the host IP for those hints.
+
+## 0.10.5
+- The Quick Access status poll pauses while the Steam UI is hidden and refreshes immediately when it becomes visible again.
+
 ## 0.10.4
 - Timed-out commands are now killed and reaped; stopping a log stream waits for its child process to exit and escalates to kill if needed.
 - The Quick Access status poll waits for each request to finish before scheduling the next one, clears its timeout, and avoids state updates after unmount.

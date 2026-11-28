@@ -12,13 +12,13 @@ for _p in (os.path.join(_HERE, "py_modules"), _HERE):
         sys.path.insert(0, _p)
 
 try:
-    from dsd import covers, i18n, lab, netinfo
+    from dsd import covers, i18n, lab
     from dsd.config import log
     from dsd.engine import Engine
     IMPORT_ERROR = None
 except Exception:  # the interface shows this text instead of silently failing to load
     IMPORT_ERROR = traceback.format_exc()
-    i18n = lab = covers = netinfo = Engine = None
+    i18n = lab = covers = Engine = None
     try:
         import decky
         log = decky.logger
@@ -80,7 +80,6 @@ class Plugin:
             if g:
                 return g
             st = await ENGINE.get_state()
-            st["host_ip"] = netinfo.lan_ip()
             return st
         except Exception:
             tb = traceback.format_exc()
@@ -102,10 +101,6 @@ class Plugin:
     async def build_report(self):
         _require_engine()
         return await ENGINE.build_report()
-
-    async def clear_data(self):
-        _require_engine()
-        return await ENGINE.clear_data()
 
     # ------------------------------------------------------------------ Lab
     async def load_data(self) -> dict:
