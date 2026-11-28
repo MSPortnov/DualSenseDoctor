@@ -1,6 +1,6 @@
 import { ButtonItem, DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, SliderField, ToggleField, staticClasses } from "@decky/ui";
 import { addEventListener, callable, definePlugin, removeEventListener, routerHook, toaster } from "@decky/api";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FaGamepad } from "react-icons/fa";
 import LabPage from "./LabPage";
 import { num, setPref, syncLang, t, useLang } from "./i18n";
@@ -178,6 +178,8 @@ function DoctorSection() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [fails, setFails] = useState(0);
+  const refreshing = useRef(false);
+  const mounted = useRef(false);
   // Folded by default. Folds again when the plugin is closed (the panel is unmounted or hidden) and when
   // the user goes to the game settings.
   const [expanded, setExpanded] = useState(false);
@@ -195,11 +197,17 @@ function DoctorSection() {
   }, []);
 
   const refresh = async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const r = await Promise.race([
         getState(),
-        new Promise<State>((_, rej) => setTimeout(() => rej(new Error(t("bt.timeout"))), 5000)),
+        new Promise<State>((_, rej) => {
+          timeout = setTimeout(() => rej(new Error(t("bt.timeout"))), 5000);
+        }),
       ]);
+      if (!mounted.current) return;
       if (r && r.error) {
         setErr(String(r.error));
         setFails((n) => n + 1);
@@ -209,14 +217,26 @@ function DoctorSection() {
         setSt(r);
       }
     } catch (e) {
+      if (!mounted.current) return;
       setErr(String(e));
       setFails((n) => n + 1);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      refreshing.current = false;
     }
   };
   useEffect(() => {
-    refresh();
-    const tm = setInterval(refresh, 2000);
-    return () => clearInterval(tm);
+    mounted.current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await refresh();
+      if (mounted.current) timer = setTimeout(poll, 2000);
+    };
+    void poll();
+    return () => {
+      mounted.current = false;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const set = async (k: string, v: any) => {

@@ -29,11 +29,12 @@ from .config import (
     STEAM_BIND_SETTLE,
     STEAM_HOLD,
     VERSION,
+    WAKE_SNAP_EVERY,
 )
 from .i18n import tr
 from .actions import Actions
 from .btmon import HEX_RE, NOISE_RE
-from .store import Store
+from .store import atomic_write_json, Store
 from .streams import DbusParser, LineStream
 from .util import dev_path, first_hci, iso, mac_from_path, mono, read, run, wall_of, which, write_sys
 
@@ -62,6 +63,7 @@ class Engine(Actions):
         self.last_wake_sources = []
         self.last_slept = 0
         self.wake_snap = {}
+        self._snap_at = 0.0     # monotonic moment of the next fallback refresh of wake_snap
         self._last_bt = None
         self._last_mt = None
         self.last_report = None
@@ -74,7 +76,8 @@ class Engine(Actions):
         self.bg = set()         # background tasks: held here so that they are neither garbage-collected nor left running on unload
         self.detached = set()   # HID devices whose driver this plugin has detached right now
         self.stopping = False
-        self.pm_orig = None     # adapter power/control before the plugin set it to "on"
+        self.pm_file = os.path.join(os.path.dirname(self.store.sessions_path), "adapter_pm.json")
+        self.pm_orig = self.load_pm_orig()   # adapter power/control before the plugin set it to "on" (kept on disk: survives a crash)
         self.report_busy = False
 
     # ------------------------------------------------------------ lifecycle
@@ -156,6 +159,7 @@ class Engine(Actions):
                 return
         elif self._login1:
             if "boolean true" in line:
+                self.snap_wakeup()   # the exact "before sleep" counters, so that the wake source is found right
                 self.arm_btmon("PrepareForSleep")
             return
         if self.dbus_parser:
@@ -217,6 +221,7 @@ class Engine(Actions):
             if cur and cur != "on":
                 if self.pm_orig is None:
                     self.pm_orig = cur   # what to put back when early connect is turned off or the plugin is unloaded
+                    self.save_pm_orig()
                 write_sys(p, "on")
                 self.elog("FIX", tr("автосон Bluetooth-адаптера отключён (%s): было %s -> on", "Bluetooth adapter autosuspend turned off (%s): was %s -> on") % (why, cur))
             return cur
@@ -224,11 +229,30 @@ class Engine(Actions):
             log.error("ensure_adapter_awake: %s", e)
             return None
 
+    def load_pm_orig(self):
+        try:
+            with open(self.pm_file) as f:
+                v = json.load(f).get("orig")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return v if v == "auto" else None
+
+    def save_pm_orig(self):
+        try:
+            if self.pm_orig is None:
+                if os.path.exists(self.pm_file):
+                    os.remove(self.pm_file)
+            else:
+                atomic_write_json(self.pm_file, {"orig": self.pm_orig})
+        except OSError as e:
+            log.error("adapter_pm file: %s", e)
+
     def restore_adapter_pm(self, why):
         """Put the adapter's autosuspend back to what it was before the plugin changed it."""
         if self.pm_orig is None:
             return
         orig, self.pm_orig = self.pm_orig, None
+        self.save_pm_orig()
         try:
             write_sys(self.adapter_pm_path(), orig)
             self.elog("FIX", tr("автосон адаптера возвращён (%s): %s", "adapter autosuspend restored (%s): %s") % (why, orig))
@@ -303,21 +327,32 @@ class Engine(Actions):
                 srcs.append("%s[%s]" % (name, dev))
         self.last_wake_sources = srcs
         self.last_slept = slept
+        self.wake_snap, self._snap_at = new, mono() + WAKE_SNAP_EVERY
         self.ensure_adapter_awake(tr("после сна", "after sleep"))
         irq = read("/sys/power/pm_wakeup_irq").strip()
         self.elog("RESUME", "slept=%.0fs wake_sources=%s pm_wakeup_irq=%s" % (slept, srcs or "?", irq or "-"))
+
+    def snap_wakeup(self):
+        self.wake_snap = self.read_wakeup()
+        self._snap_at = mono() + WAKE_SNAP_EVERY
+
+    async def tick_once(self):
+        """Once a second: two clock reads (resume detection) and one stat call (report request). The wake-source counters
+        (dozens of sysfs files) are read only before sleep and as a rare fallback, not every second."""
+        self.check_resume()
+        self.check_report_request()
+        if mono() >= self._snap_at:
+            self.snap_wakeup()
+        if self.btmon_demand and mono() > self.btmon_arm_until:
+            self.disarm_btmon()
+        if self.dbus_missing:
+            await self._poll_conn()
 
     async def _tick(self):
         while True:
             await asyncio.sleep(1.0)
             try:
-                self.check_resume()
-                self.check_report_request()
-                self.wake_snap = self.read_wakeup()
-                if self.btmon_demand and mono() > self.btmon_arm_until:
-                    self.disarm_btmon()
-                if self.dbus_missing:
-                    await self._poll_conn()
+                await self.tick_once()
             except asyncio.CancelledError:
                 raise
             except Exception as e:

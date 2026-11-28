@@ -78,6 +78,12 @@ async def run(cmd, timeout=10):
             p.kill()
         except ProcessLookupError:
             pass
+        # Reap the child and drain its pipes after killing it. Without this wait a
+        # timed-out command can linger as a zombie until the event loop closes.
+        try:
+            await p.communicate()
+        except (OSError, ProcessLookupError):
+            pass
         return -9, "timeout after %ss" % timeout
 
 

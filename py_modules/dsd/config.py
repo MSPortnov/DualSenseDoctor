@@ -20,11 +20,12 @@ DECKY_USER = _d("DECKY_USER", "deck")
 USER_HOME = _d("DECKY_USER_HOME", "/home/deck")
 log = decky.logger if decky else logging.getLogger("dsd")
 
-VERSION = "0.10.2"
+VERSION = "0.10.4"
 REPORT_REQUEST_NAME = ".dsd-report-request"  # deploy.sh fetch creates this file in the user's home to ask for a report
 HID_DIR = "/sys/bus/hid/devices"
 HOT_CAP = 8000            # max. btmon lines per session
 NOHID_TIMEOUT = 25.0      # connected, but the HID device never appeared
+WAKE_SNAP_EVERY = 20.0    # fallback refresh of the wake-source counters (the exact one is taken when logind announces the sleep)
 RESUME_WINDOW = 40.0      # a connection within N s after resume counts as "after sleep"
 MAX_SESSIONS = 300
 MAX_BTMON_FILES = 40

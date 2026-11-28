@@ -24,6 +24,7 @@ class LineStream:
             pass
         if self.task:
             self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
 
     def _emit(self, raw):
         text = ANSI.sub("", raw).replace("\r", "").rstrip("\n")
@@ -61,12 +62,32 @@ class LineStream:
         self.proc = await asyncio.create_subprocess_exec(
             *self.cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, env=ENV)
-        while True:
-            line = await self.proc.stdout.readline()
-            if not line:
-                break
-            self._emit(line.decode(errors="replace"))
-        await self.proc.wait()
+        try:
+            while True:
+                line = await self.proc.stdout.readline()
+                if not line:
+                    break
+                self._emit(line.decode(errors="replace"))
+            await self.proc.wait()
+        finally:
+            await self._reap_proc()
+
+    async def _reap_proc(self):
+        proc = self.proc
+        if not proc or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), 3)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
 
     async def _run_pty(self):
         master, slave = os.openpty()
@@ -115,15 +136,7 @@ class LineStream:
                 os.close(master)
             except OSError:
                 pass
-            if self.proc.returncode is None:
-                try:
-                    self.proc.terminate()
-                except ProcessLookupError:
-                    pass
-            try:
-                await asyncio.wait_for(self.proc.wait(), 3)
-            except asyncio.TimeoutError:
-                pass
+            await self._reap_proc()
 
 
 class DbusParser:

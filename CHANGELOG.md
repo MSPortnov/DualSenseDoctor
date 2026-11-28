@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.4
+- Timed-out commands are now killed and reaped; stopping a log stream waits for its child process to exit and escalates to kill if needed.
+- The Quick Access status poll waits for each request to finish before scheduling the next one, clears its timeout, and avoids state updates after unmount.
+- Added regression tests for subprocess timeout cleanup and stream shutdown.
+
+## 0.10.3
+- **Lighter background work.** Once a second the plugin used to read the wake-source counters of the whole system (dozens of sysfs files) and compare them after sleep. Now it does this only when logind announces the sleep (the exact "before sleep" values, so the wake source is found right) and as a rare fallback every 20 s; the once-a-second tick is two clock reads and one stat call. Resume detection is unchanged.
+- **The original autosuspend value is kept on disk** (`adapter_pm.json` in the plugin's data folder). If the plugin is killed while the adapter is kept awake, the next start still knows it was `auto` and puts it back when Early connect is switched off or the plugin is unloaded. A damaged or unexpected file is ignored.
+- Tests: 102 (were 96): the tick does not read the counters every second, the fallback refresh, the exact snapshot on the sleep announcement, the wake source against that snapshot, the original value across a restart, a damaged file.
+
 ## 0.10.2
 - **The "Keep the Bluetooth adapter awake" switch is gone.** The adapter's USB autosuspend is now turned off together with **Early connect** (on = the adapter stays awake, off = SteamOS settings are left alone). A test report showed why it matters: with autosuspend left on, the controller woke up half-dead (buttons dead until PS was pressed, wrong lightbar) although every session looked fine to the plugin. If something turns autosuspend on again, the plugin turns it off again. The original value is saved and put back when Early connect is switched off and when the plugin is unloaded. The old `no_autosuspend` key in `settings.json` is dropped on load. `usb_power.txt` in the report says whether the adapter is protected.
 - **`deploy.sh fetch` makes the report itself:** it leaves a request file (`~/.dsd-report-request`) in the home folder, the plugin (checking once a second) collects a fresh report like the button does, and the script waits up to 40 seconds and downloads it. The plugin accepts only a regular file owned by the user, never a link, and removes it. If the plugin does not answer, the script says so instead of downloading an old report.

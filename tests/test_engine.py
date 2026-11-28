@@ -373,6 +373,24 @@ class Adapter(Base):
         r = await self.e.set_setting("no_autosuspend", False)
         self.assertNotIn("no_autosuspend", r)
 
+    async def test_original_value_survives_a_restart(self):
+        a, b = self.patched()
+        with a, b:
+            self.put("auto")
+            self.e.ensure_adapter_awake("t")
+            e2 = eng_mod.Engine()           # the plugin was killed and started again: the adapter is "on" now
+            self.assertEqual(e2.pm_orig, "auto")
+            e2.adapter_pm_path = lambda: self.pm
+            e2.restore_adapter_pm("setting")
+            self.assertEqual(self.get(), "auto")
+            self.assertIsNone(eng_mod.Engine().pm_orig)   # nothing left on disk after the restore
+
+    async def test_damaged_file_is_ignored(self):
+        open(self.e.pm_file, "w").write("{not json")
+        self.assertIsNone(self.e.load_pm_orig())
+        open(self.e.pm_file, "w").write('{"orig": "rm -rf"}')
+        self.assertIsNone(self.e.load_pm_orig())
+
 
 class ReportRequest(Base):
     async def test_request_starts_one_report(self):
@@ -402,3 +420,43 @@ class ReportRequest(Base):
             self.e.check_report_request()
             await asyncio.gather(*list(self.e.bg))
         self.assertFalse(self.e.report_busy)
+
+
+class Tick(Base):
+    """The once-a-second tick must not read dozens of sysfs files."""
+
+    async def test_counters_are_not_read_every_second(self):
+        reads = []
+        self.e.read_wakeup = lambda: reads.append(1) or {}
+        self.e.dbus_missing = False
+        with mock.patch.object(eng_mod.report, "take_request", lambda: False):
+            for _ in range(10):
+                await self.e.tick_once()
+        self.assertEqual(len(reads), 1)   # the first pass only; the next refresh is WAKE_SNAP_EVERY seconds later
+
+    async def test_fallback_refresh_after_the_interval(self):
+        reads = []
+        self.e.read_wakeup = lambda: reads.append(1) or {}
+        with mock.patch.object(eng_mod.report, "take_request", lambda: False):
+            await self.e.tick_once()
+            self.e._snap_at = mono() - 1
+            await self.e.tick_once()
+        self.assertEqual(len(reads), 2)
+
+    async def test_sleep_announcement_takes_the_exact_snapshot(self):
+        snaps = [{"wakeup1": ("pwr", "d", 5, 5)}]
+        self.e.read_wakeup = lambda: snaps[0]
+        self.e.cfg["l2cap_answer"] = False
+        for line in ("signal time=1 sender=:1 -> destination=(null destination) path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=PrepareForSleep",
+                     "   boolean true"):
+            self.e.feed_dbus(line)
+        self.assertEqual(self.e.wake_snap, snaps[0])
+
+    async def test_wake_source_is_found_against_the_snapshot_before_sleep(self):
+        before = {"wakeup1": ("pwr", "d", 5, 5), "wakeup2": ("usb", "e", 1, 1)}
+        after = {"wakeup1": ("pwr", "d", 5, 5), "wakeup2": ("usb", "e", 2, 2)}
+        self.e.wake_snap = before
+        self.e.read_wakeup = lambda: after
+        self.e.on_resume(time.time(), 30.0)
+        self.assertEqual(self.e.last_wake_sources, ["usb[e]"])
+        self.assertEqual(self.e.wake_snap, after)   # the new baseline
