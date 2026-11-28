@@ -154,7 +154,7 @@ class Supervise(Base):
         self.e.do_bt_connect = connect
         self.extra = [mock.patch.object(hid_mod, "find_hid", find_hid),
                       mock.patch.object(hid_mod, "hid_info", hid_info),
-                      mock.patch.object(hid_mod, "steam_device_state", lambda marks: (False, None)),
+                      mock.patch.object(hid_mod, "steam_device_state", lambda *_: (True, "hidapi")),
                       mock.patch.object(hid_mod, "steam_log_marks", lambda: {})]
         for p in self.extra:
             p.start()
@@ -166,25 +166,29 @@ class Supervise(Base):
         await super().asyncTearDown()
 
     def start(self):
-        self.e.start_session(MAC)
+        self.supervision = self.e.start_session(MAC)
         return self.e.cur[MAC]
 
-    async def finish(self, s, timeout=8):
-        await asyncio.wait_for(self.e.sup_tasks[s["id"]], timeout)
+    async def finish(self):
+        await asyncio.wait_for(self.supervision, 8)
 
     async def test_normal_connection_is_ok(self):
         s = self.start()
-        await self.finish(s)
+        await self.finish()
         self.assertEqual(s["result"], "OK")
         self.assertEqual(s["fixes_applied"], [])
         self.assertIsNotNone(s["t_hid"])
-        self.assertIsNotNone(s["t_usable"])
+        self.assertIsNotNone(s["t_hid_ready"])
+        self.assertNotIn(self.supervision, self.e.bg)
+        latest = (await self.e.get_state())["latest_session"]
+        self.assertEqual(latest["hid_status"], "ready")
+        self.assertEqual(latest["steam_status"], "confirmed")
         self.assertEqual(self.connects, [])
 
     async def test_late_hid_triggers_early_connect_and_counts_as_fixed(self):
         self.hid_at = 0.9
         s = self.start()
-        await self.finish(s)
+        await self.finish()
         self.assertEqual(s["result"], "FIXED")
         self.assertIn("early_connect", s["fixes_applied"])
         self.assertGreaterEqual(len(self.connects), 1)
@@ -193,7 +197,7 @@ class Supervise(Base):
         self.e.cfg["early_connect"] = False
         self.hid_at = 0.9
         s = self.start()
-        await self.finish(s)
+        await self.finish()
         self.assertEqual(self.connects, [])
         self.assertEqual(s["result"], "OK")
 
@@ -201,13 +205,15 @@ class Supervise(Base):
         self.hid_at = 999
         with mock.patch.object(eng_mod, "NOHID_TIMEOUT", 1.0):
             s = self.start()
-            await self.finish(s)
+            await self.finish()
         self.assertEqual(s["result"], "NOHID")
+        self.assertEqual(s["hid_status"], "missing")
+        self.assertEqual(s["steam_status"], "not_checked")
 
     async def test_unhealthy_hid(self):
         self.healthy = False
         s = self.start()
-        await self.finish(s)
+        await self.finish()
         self.assertEqual(s["result"], "NOGYRO")
 
     async def test_disconnect_before_the_verdict_is_aborted(self):
@@ -216,8 +222,19 @@ class Supervise(Base):
         await asyncio.sleep(0.5)
         self.e.ctrl[MAC]["connected"] = False
         await self.e.end_session(MAC)
-        await self.finish(s)
+        await self.finish()
         self.assertEqual(s["result"], "ABORTED")
+
+    async def test_ready_hid_with_pending_steam_does_not_show_fixed(self):
+        self.hid_at = 0.9
+        with mock.patch.object(hid_mod, "steam_device_state", return_value=(False, None)):
+            s = self.start()
+            await self.finish()
+        self.assertEqual(s["hid_status"], "ready")
+        self.assertEqual(s["steam_status"], "checking")
+        self.assertEqual(s["result"], "OK")
+        self.assertIn("early_connect", s["fixes_applied"])
+        self.assertEqual(self.e.fix_log(), [])
 
 
 class SteamWatch(Base):
@@ -229,7 +246,7 @@ class SteamWatch(Base):
         async def fake_rebind(s, hid):
             self.rebinds.append(hid)
         self.e.do_rebind = fake_rebind
-        self.extra = [mock.patch.object(hid_mod, "steam_device_state", lambda marks: self.state),
+        self.extra = [mock.patch.object(hid_mod, "steam_device_state", lambda *_: self.state),
                       mock.patch.object(hid_mod, "steam_log_marks", lambda: {}),
                       mock.patch.object(actions_mod, "STEAM_WAIT", 0.6)]
         for p in self.extra:
@@ -260,7 +277,8 @@ class SteamWatch(Base):
         self.assertEqual(len(self.rebinds), 2)
         self.assertEqual(s["steam_path"], "evdev")
         self.assertEqual(s["result"], "NOSTEAM")
-        self.assertIn("steam_pickup", s["fixes_applied"])
+        self.assertEqual(s["steam_status"], "wrong_mode")
+        self.assertNotIn("steam_pickup", s["fixes_applied"])
 
     async def test_wrong_opening_with_pickup_off_is_only_reported(self):
         self.e.cfg["steam_pickup"] = False
@@ -277,7 +295,43 @@ class SteamWatch(Base):
             await asyncio.wait_for(self.e._steam_watch(s, HID), 10)
         self.assertEqual(len(self.rebinds), 2)
         self.assertIsNone(s["steam_seen_s"])
-        self.assertEqual(s["result"], "FIXED")        # something was done (rebinds), nothing wrong was reported
+        self.assertEqual(s["result"], "NOSTEAM")
+        self.assertEqual(s["steam_status"], "not_seen")
+        self.assertEqual(s["steam_rebinds"], 2)
+        self.assertNotIn("steam_pickup", s["fixes_applied"])
+
+    async def test_steam_pickup_is_fixed_only_when_confirmed_after_rebind(self):
+        s = self.session()
+        position = 0
+
+        async def rebind(session, hid):
+            nonlocal position
+            position = 1
+
+        def state(marks, hid, mac):
+            if position == 0:
+                return True, "evdev"
+            if marks["log"] == 0:
+                return True, "hidapi"
+            return False, None
+
+        self.e.do_rebind = rebind
+        with mock.patch.object(hid_mod, "steam_log_marks", side_effect=lambda: {"log": position}), \
+                mock.patch.object(hid_mod, "steam_device_state", side_effect=state):
+            await asyncio.wait_for(self.e._steam_watch(s, HID), 5)
+        self.assertEqual(s["steam_status"], "confirmed")
+        self.assertEqual(s["result"], "FIXED")
+        self.assertEqual(s["steam_rebinds"], 1)
+        self.assertIn("steam_pickup", s["fixes_applied"])
+
+    async def test_steam_log_without_a_known_mode_is_unconfirmed(self):
+        s = self.session()
+        self.state = (True, None)
+        with mock.patch.object(actions_mod, "STEAM_PATH_WAIT", 0):
+            await asyncio.wait_for(self.e._steam_watch(s, HID), 3)
+        self.assertEqual(s["steam_status"], "unconfirmed")
+        self.assertEqual(s["result"], "NOSTEAM")
+        self.assertEqual(self.rebinds, [])
 
     async def test_steam_not_running_skips_the_check(self):
         self.state = (False, None)
@@ -285,6 +339,8 @@ class SteamWatch(Base):
         with mock.patch.object(hid_mod, "steam_running", lambda: False):
             await asyncio.wait_for(self.e._steam_watch(s, HID), 5)
         self.assertEqual(self.rebinds, [])
+        self.assertEqual(s["steam_status"], "not_running")
+        self.assertEqual(s["result"], "OK")
 
     async def test_two_wrong_sessions_through_the_watch_raise_the_time(self):
         """The whole chain: two sessions end with a wrong Steam opening -> the time grows."""

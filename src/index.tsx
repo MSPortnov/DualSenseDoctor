@@ -105,6 +105,11 @@ type LogEntry = {
   iso: string;
   result: string;
   t_hid: number | null;
+  t_hid_ready: number | null;
+  hid_status: string | null;
+  steam_status: string | null;
+  steam_seen_s: number | null;
+  steam_rebinds: number | null;
   fixes_applied: string[];
   unknown_handle: number;
   after_resume: boolean;
@@ -114,6 +119,7 @@ type State = {
   version: string;
   settings: Record<string, any>;
   fix_log: LogEntry[];
+  latest_session?: LogEntry | null;
 };
 
 const getState = callable<[], State>("get_state");
@@ -127,6 +133,7 @@ const STATUS_COLOR: Record<string, string> = {
   FIXED: "#9ccc65",
   NOHID: "#ef5350",
   NOGYRO: "#ffb74d",
+  HIDERROR: "#ef5350",
   NOSTEAM: "#ffb74d",
 };
 
@@ -137,23 +144,35 @@ function statusText(result: string): string {
 }
 
 function describe(x: LogEntry): string {
+  const parts: string[] = [];
+  if (x.hid_status === "ready" && x.t_hid_ready != null) {
+    parts.push(t("bt.hid.readyAt", { n: num(x.t_hid_ready) }));
+  } else if (x.hid_status) {
+    parts.push(t("bt.hid." + x.hid_status));
+  }
+  if (x.steam_status === "confirmed" && x.steam_seen_s != null) {
+    parts.push(t("bt.steam.confirmedAt", { n: num(x.steam_seen_s) }));
+  } else if (x.steam_status) {
+    parts.push(t("bt.steam." + x.steam_status));
+  } else if (x.result === "NOSTEAM") {
+    parts.push(t("bt.d.steamWrong"));
+  }
+  if (x.steam_rebinds) parts.push(t("bt.steam.rebinds", { n: x.steam_rebinds }));
   if (x.result === "FIXED") {
-    const parts: string[] = [];
     const bt = x.fixes_applied.includes("early_connect") || x.fixes_applied.includes("l2cap_answer");
     if (bt) parts.push(x.unknown_handle > 0 ? t("bt.d.lostPacket") : t("bt.d.unstable"));
-    if (x.fixes_applied.includes("steam_pickup")) parts.push(t("bt.d.steamPickup"));
+    if (!x.steam_status && x.fixes_applied.includes("steam_pickup")) parts.push(t("bt.d.steamPickup"));
     if (x.fixes_applied.includes("early_connect")) {
       parts.push(x.t_hid !== null ? t("bt.d.earlyHid", { n: x.t_hid }) : t("bt.d.early"));
     }
     if (x.fixes_applied.includes("l2cap_answer")) parts.push(t("bt.d.answer"));
-    return parts.join("; ");
   }
-  if (x.result === "NOSTEAM") return t("bt.d.steamWrong");
-  return t("bt.d.notEstablished");
+  return parts.length ? parts.join(" · ") : t("bt.d.notEstablished");
 }
 
 function LogRow({ x }: { x: LogEntry }) {
-  const color = STATUS_COLOR[x.result] ?? "#fff";
+  const result = x.result === "OK" && x.steam_status === "checking" ? "RUNNING" : x.result;
+  const color = STATUS_COLOR[result] ?? "#fff";
   return (
     <PanelSectionRow>
       <Field
@@ -161,7 +180,7 @@ function LogRow({ x }: { x: LogEntry }) {
         label={
           <span>
             <span style={{ opacity: 0.8 }}>{x.iso.slice(8, 10) + "." + x.iso.slice(5, 7) + " " + x.iso.slice(11, 19)} </span>
-            <span style={{ color, fontWeight: 600 }}>{statusText(x.result)}</span>
+            <span style={{ color, fontWeight: 600 }}>{statusText(result)}</span>
           </span>
         }
         description={describe(x)}
@@ -289,11 +308,13 @@ function DoctorSection() {
   }
 
   const s = st.settings;
-  const shown = st.fix_log.slice(0, expanded ? 3 : 1);
+  const latest = st.latest_session;
+  const rows = latest ? [latest, ...st.fix_log.filter((x) => x.id !== latest.id)] : st.fix_log;
+  const shown = rows.slice(0, expanded ? 3 : 1);
   return (
     <>
       <PanelSection title={t("doctor.bt")}>
-        {st.fix_log.length === 0 ? (
+        {shown.length === 0 ? (
           <PanelSectionRow>
             <Field {...FOCUS} label={t("bt.working")} description={t("bt.noFixes")} />
           </PanelSectionRow>

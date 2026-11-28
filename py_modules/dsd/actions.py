@@ -105,10 +105,15 @@ class Actions:
         rebinds = 0
         t0 = mono()
         t_seen = None
+        steam_status = "interrupted"
         try:
             while alive():
                 await asyncio.sleep(0.5)
-                seen, path = await loop.run_in_executor(None, hid_mod.steam_device_state, marks)
+                if not alive():
+                    return
+                if s.get("_hold"):
+                    continue
+                seen, path = await loop.run_in_executor(None, hid_mod.steam_device_state, marks, hid, mac)
                 if seen:
                     if t_seen is None:
                         t_seen = mono()
@@ -120,57 +125,68 @@ class Actions:
                             return
                         if cfg["steam_pickup"] and rebinds < 2:
                             rebinds += 1
-                            if "steam_pickup" not in s["fixes_applied"]:
-                                s["fixes_applied"].append("steam_pickup")
+                            s["steam_rebinds"] = rebinds
                             self.ev(s, tr("Steam открыл контроллер неверно (серийник не прочитан: подсветка заводская, A и B перепутаны) -> rebind #%d",
                                           "Steam opened the controller the wrong way (serial number not read: default lightbar, "
                                           "A and B swapped) -> rebind #%d") % rebinds)
-                            await self.do_rebind(s, hid)
+                            # Steam can log the new opening while rebind is still settling.
                             marks = await loop.run_in_executor(None, hid_mod.steam_log_marks)
+                            await self.do_rebind(s, hid)
                             t0 = mono()
                             t_seen = None
                             continue
+                        steam_status = "wrong_mode"
                         s["steam_path"] = "evdev"
                         s["steam_seen_s"] = round(mono() - s["_mono"], 1)
                         self.ev(s, tr("Steam открыл контроллер неверно (evdev), исправить не удалось (rebinds=%d)", "Steam opened the controller the wrong way (evdev), could not fix it (rebinds=%d)") % rebinds)
-                        self.store.save_sessions()
                         return
                     if path == "hidapi" or mono() - t_seen >= STEAM_PATH_WAIT:
+                        steam_status = "confirmed" if path == "hidapi" else "unconfirmed"
                         s["steam_path"] = path
-                        s["steam_seen_s"] = round(mono() - s["_mono"], 1)
-                        self.ev(s, tr("Steam заметил контроллер (через %.1fс от подключения, режим %s)",
-                              "Steam noticed the controller (%.1fs after connection, mode %s)") % (
-                            s["steam_seen_s"], path or tr("не определён", "not determined")))
-                        self.store.save_sessions()
+                        if path == "hidapi":
+                            s["steam_seen_s"] = round(mono() - s["_mono"], 1)
+                            self.ev(s, tr("Steam открыл контроллер через HIDAPI (через %.1fс от подключения)",
+                                          "Steam opened the controller via HIDAPI (%.1fs after connection)") % s["steam_seen_s"])
+                        else:
+                            self.ev(s, tr("журнал Steam не подтвердил открытие этого контроллера через HIDAPI",
+                                          "Steam's log did not confirm a HIDAPI opening for this controller"))
                         return
                     continue
                 if mono() - t0 >= STEAM_WAIT:
                     if not await loop.run_in_executor(None, hid_mod.steam_running):
+                        steam_status = "not_running"
                         self.ev(s, tr("Steam не запущен, проверка пропущена", "Steam is not running, check skipped"))
                         return
                     if cfg["steam_pickup"] and rebinds < 2:
                         rebinds += 1
-                        if "steam_pickup" not in s["fixes_applied"]:
-                            s["fixes_applied"].append("steam_pickup")
+                        s["steam_rebinds"] = rebinds
                         self.ev(s, tr("Steam не заметил контроллер за %.0fс -> rebind #%d", "Steam did not notice the controller within %.0fs -> rebind #%d") % (STEAM_WAIT, rebinds))
+                        marks = await loop.run_in_executor(None, hid_mod.steam_log_marks)
                         await self.do_rebind(s, hid)
                         t0 = mono()
+                        t_seen = None
                         continue
+                    steam_status = "not_seen"
                     s["steam_seen_s"] = None
                     self.ev(s, tr("Steam НЕ заметил контроллер за %.0fс (rebinds=%d)", "Steam did NOT notice the controller within %.0fs (rebinds=%d)") % (STEAM_WAIT, rebinds))
-                    self.store.save_sessions()
                     return
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            steam_status = "unconfirmed"
             log.error("steam_watch: %s", e)
         finally:
-            if s["result"] in ("OK", "FIXED") and s.get("steam_path") == "evdev":
-                s["result"] = "NOSTEAM"
-            elif "steam_pickup" in s["fixes_applied"] and s["result"] == "OK":
-                s["result"] = "FIXED"
-            s["steam_done"] = True
+            s["steam_status"] = steam_status
+            s["t_steam_check"] = round(mono() - s["_mono"], 2)
+            if steam_status == "confirmed" and rebinds and "steam_pickup" not in s["fixes_applied"]:
+                s["fixes_applied"].append("steam_pickup")
+            if s["result"] in ("OK", "FIXED"):
+                s["result"] = stats.ready_result(s)
+            self.ev(s, "STEAM result=%s rebinds=%d" % (steam_status, rebinds))
+            s["steam_done"] = steam_status in ("confirmed", "wrong_mode", "not_seen")
             self.store.save_sessions()
+            if "t_final" in s and s["result"] != "ABORTED" and not self.stopping:
+                self.spawn(self._post_final(s))
             try:
                 await self.maybe_tune(s)
             except Exception as e:

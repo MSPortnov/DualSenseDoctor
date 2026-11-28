@@ -79,7 +79,6 @@ class Engine(Actions):
         self.dbus_missing = False
         self.action_lock = None
         self.q = None
-        self.sup_tasks = {}
         self.bg = set()         # background tasks: held here so that they are neither garbage-collected nor left running on unload
         self.detached = set()   # HID devices whose driver this plugin has detached right now
         self.stopping = False
@@ -135,7 +134,7 @@ class Engine(Actions):
 
     async def stop(self):
         self.stopping = True
-        pending = set(self.tasks) | set(self.sup_tasks.values()) | self.bg
+        pending = set(self.tasks) | self.bg
         for t in pending:
             t.cancel()
         if pending:
@@ -496,7 +495,8 @@ class Engine(Actions):
             "wake_sources": self.last_wake_sources if after else [],
             "slept_s": round(self.last_slept) if after else None,
             "unknown_handle": sum(1 for t in self.unknown_handle_ts if nm - 15 <= t <= nm + 1),
-            "t_hid": None, "t_usable": None, "problems": [],
+            "t_hid": None, "t_hid_ready": None, "hid_status": "checking", "problems": [],
+            "steam_status": "not_checked", "steam_rebinds": 0,
             "fixes_applied": [], "events": [], "steam_path": None,
             "_mono": nm, "bind_at": self.cfg["steam_bind_at"],
             "_steam_marks": hid_mod.steam_log_marks(),
@@ -507,7 +507,7 @@ class Engine(Actions):
         self.ev(s, "CONNECTED after_resume=%s since_resume=%s unknown_handle=%d profile=%s" % (
             after, s["since_resume_s"], s["unknown_handle"], s["profile"]))
         self.store.save_sessions()
-        self.sup_tasks[sid] = asyncio.ensure_future(self._supervise(s))
+        return self.spawn(self._supervise(s))
 
     async def _supervise(self, s):
         cfg = self.cfg
@@ -539,6 +539,7 @@ class Engine(Actions):
                     continue
                 if s["t_hid"] is None:
                     s["t_hid"] = round(el, 2)
+                    s["steam_status"] = "checking"
                     self.spawn(self._steam_watch(s, hid))
                     if STEAM_HOLD:
                         self.spawn(self._hold_hid(s, hid))
@@ -552,9 +553,8 @@ class Engine(Actions):
                 s["problems"] = h["problems"]
                 s["driver"] = h["driver"]
                 if h["healthy"]:
-                    s["t_usable"] = round(el, 2)
-                    res = "FIXED" if any(k in s["fixes_applied"] for k in ("early_connect", "steam_pickup")) else "OK"
-                    self.finalize(s, res, "driver=%s inputs=%s leds=%s" % (h["driver"], h["inputs"], h["leds"]))
+                    s["t_hid_ready"] = round(mono() - t0, 2)
+                    self.finalize(s, "OK", "driver=%s inputs=%s leds=%s" % (h["driver"], h["inputs"], h["leds"]))
                     return
                 self.ev(s, tr("HID нездоров: %s", "HID is unhealthy: %s") % h["problems"])
                 self.finalize(s, "NOGYRO", "problems=%s" % h["problems"])
@@ -563,21 +563,23 @@ class Engine(Actions):
             raise
         except Exception as e:
             log.error("supervise: %s", e)
-            self.ev(s, "ERROR supervise: %s" % e)
+            self.finalize(s, "HIDERROR", str(e))
 
     def finalize(self, s, result, note=""):
         if s["result"] != "RUNNING":
             return
         healthy = result in ("OK", "FIXED")
-        if healthy and s.get("steam_path") == "evdev":
-            result = "NOSTEAM"
+        s["hid_status"] = {"NOHID": "missing", "NOGYRO": "unhealthy", "HIDERROR": "error"}.get(result, "ready")
+        if healthy:
+            result = stats.ready_result(s)
         s["result"] = result
         s["t_final"] = round(mono() - s["_mono"], 2)
         if note:
             s["note"] = note
-        self.ev(s, "RESULT %s %s" % (result, note))
+        self.ev(s, "HID result=%s %s" % (s["hid_status"], note))
         self.store.save_sessions()
-        self.spawn(self._post_final(s))
+        if s.get("steam_status") != "checking":
+            self.spawn(self._post_final(s))
         if (healthy and self.cfg["l2cap_answer"]
                 and "early_connect" in s["fixes_applied"]):
             self.spawn(self._l2cap_answer(s))
@@ -587,13 +589,15 @@ class Engine(Actions):
             await asyncio.sleep(3.0)
             if s["result"] not in ("OK", "FIXED"):
                 s["diag"] = await self.collect_diag(s["mac"])
-            lo, hi = s["_mono"] - 15, s["_mono"] + s.get("t_final", 0) + 3
+            lo = s["_mono"] - 15
+            hi = s["_mono"] + max(s["t_final"], s.get("t_steam_check", 0)) + 3
             s["kernel"] = ["%s [%s] %s" % (iso(wall_of(t)), k, l) for (t, k, l) in self.recent if lo <= t <= hi][-40:]
             self.dump_btmon(s)
-            self.hot.pop(s["id"], None)
             self.store.save_sessions()
         except Exception as e:
             log.error("post_final: %s", e)
+        finally:
+            self.hot.pop(s["id"], None)
 
     async def end_session(self, mac):
         s = self.cur.pop(mac, None)
@@ -603,6 +607,7 @@ class Engine(Actions):
         if s["result"] == "RUNNING":
             # the controller left before the check was finished (switched off, or the PC went to sleep): no verdict
             s["result"] = "ABORTED"
+            s["hid_status"] = "interrupted"
             self.hot.pop(s["id"], None)
         self.store.save_sessions()
 
@@ -700,4 +705,5 @@ class Engine(Actions):
         return await asyncio.shield(self.report_task)
 
     async def get_state(self):
-        return {"version": VERSION, "settings": self.public_settings(), "fix_log": self.fix_log()}
+        latest = stats.session_summary(self.sessions[-1]) if self.sessions else None
+        return {"version": VERSION, "settings": self.public_settings(), "fix_log": self.fix_log(), "latest_session": latest}

@@ -17,7 +17,13 @@ class Stats(unittest.TestCase):
               sess("FIXED", fixes=["steam_pickup"], t=3.0)]
         p = stats.compute_stats(ss)["p"]
         self.assertEqual((p["n"], p["ok"], p["fixed"], p["failed"], p["steam_rebind"]), (4, 1, 2, 1, 1))
-        self.assertEqual(p["avg_ttu"], 1.7)
+        self.assertEqual(p["avg_hid_ready_s"], 1.7)
+
+    def test_hid_time_and_rebind_attempts_are_reported_even_when_steam_fails(self):
+        failed = sess("NOSTEAM", steam_status="not_seen", steam_rebinds=2, t_hid_ready=3)
+        pending = sess("OK", steam_status="checking", t_hid_ready=4)
+        p = stats.compute_stats([failed, pending])["p"]
+        self.assertEqual((p["n"], p["failed"], p["fixed"], p["steam_rebind"], p["avg_hid_ready_s"]), (1, 1, 0, 1, 3.0))
 
     def test_profiles_are_separate(self):
         st = stats.compute_stats([sess("OK", profile="a"), sess("OK", profile="b")])

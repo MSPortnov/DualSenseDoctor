@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.9
+- Match Steam pickup to the controller being restored. Use the USB vendor and product IDs and the Bluetooth address when Steam records it. An opening without an address only confirms pickup when there is a single local HID device of that model.
+- Prefer an exact Bluetooth address when choosing a HID device and avoid choosing between multiple devices with missing addresses.
+
+## 0.10.8
+- Count Steam pickup as repaired only when Steam logs a HIDAPI opening after the retry. Missing or inconclusive Steam logs are reported separately from a wrong input mode.
+- Show HID readiness and Steam pickup separately for the latest connection. The report includes the two checks, their timing and the driver reconnect attempts.
+- Release finished connection checks and session trace buffers so they do not accumulate during long runs.
+
 ## 0.10.7
 - Wait for HID driver operations to finish on unload and retry a failed restore. Keep the original adapter autosuspend value until it has been restored and verified.
 - Detect short wakes through logind, with a clock fallback. Apply the same session boundary to the action journal and its saved HCI traces.

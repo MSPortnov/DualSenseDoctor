@@ -20,7 +20,7 @@ DECKY_USER = _d("DECKY_USER", "deck")
 USER_HOME = _d("DECKY_USER_HOME", "/home/deck")
 log = decky.logger if decky else logging.getLogger("dsd")
 
-VERSION = "0.10.7"
+VERSION = "0.10.9"
 REPORT_REQUEST_NAME = ".dsd-report-request"  # deploy.sh fetch creates this file in the user's home to ask for a report
 HID_DIR = "/sys/bus/hid/devices"
 HOT_CAP = 8000            # max. btmon lines per session

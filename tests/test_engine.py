@@ -309,22 +309,20 @@ class Clock(Base):
         self.e.last_resume_mono = mono() - 5.0
         real = time.time
         with mock.patch("time.time", lambda: real() + 3600):   # NTP corrected the clock by an hour
-            self.e.start_session(MAC)
+            task = self.e.start_session(MAC)
         s = self.e.cur[MAC]
         self.assertTrue(s["after_resume"])
         self.assertAlmostEqual(s["since_resume_s"], 5.0, delta=0.5)
-        for t in self.e.sup_tasks.values():
-            t.cancel()
-        await asyncio.gather(*self.e.sup_tasks.values(), return_exceptions=True)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def test_connection_long_after_resume_is_not_after_sleep(self):
         self.e.ctrl[MAC] = {"name": "DualSense", "is_ds": True, "connected": True, "wake_allowed": True}
         self.e.last_resume_mono = mono() - 300
-        self.e.start_session(MAC)
+        task = self.e.start_session(MAC)
         self.assertFalse(self.e.cur[MAC]["after_resume"])
-        for t in self.e.sup_tasks.values():
-            t.cancel()
-        await asyncio.gather(*self.e.sup_tasks.values(), return_exceptions=True)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def test_logind_handles_short_wake_without_counting_it_twice(self):
         signal = "signal path=/org/freedesktop/login1; member=PrepareForSleep"

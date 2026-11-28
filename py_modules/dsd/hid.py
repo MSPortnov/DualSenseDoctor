@@ -45,11 +45,14 @@ def hid_info(n):
             "healthy": not problems, "problems": problems}
 
 def find_hid(mac):
+    unidentified = []
     for n in list_ds_hid():
         u = hid_uniq(n)
-        if u is None or u.upper() == mac.upper():
+        if u is None:
+            unidentified.append(n)
+        elif u.upper() == mac.upper():
             return n
-    return None
+    return unidentified[0] if len(unidentified) == 1 else None
 
 
 def hidraw_holders(names):
@@ -66,7 +69,11 @@ def hidraw_holders(names):
 
 
 STEAM_LOGS = ("controller.txt", "controller_ui.txt")
-STEAM_MARKERS = ("Local Device Found", "device opened for index", "connected, configuring")
+STEAM_DEVICE = re.compile(r"^(?:\[[^\]\r\n]+\][ \t]+)?Local Device Found\b", re.M)
+STEAM_TYPE = re.compile(r"^[ \t]*type:[ \t]+([\da-f]{4})[ \t]+([\da-f]{4})\b", re.I | re.M)
+STEAM_SERIAL = re.compile(r"^[ \t]*serial_number:[ \t]*([^\r\n]*)", re.I | re.M)
+STEAM_HIDAPI = re.compile(r"HIDAPI driver,\s+vid=0x([\da-f]{4}),\s+pid=0x([\da-f]{4})\b", re.I)
+STEAM_BAD_SERIAL = "Invalid or missing unit serial number"
 
 
 def steam_log_marks():
@@ -82,16 +89,23 @@ def steam_log_marks():
     return marks
 
 
-STEAM_BAD_SERIAL = "Invalid or missing unit serial number"
+def controller_address(value):
+    address = value.strip().lower().replace(":", "").replace("-", "")
+    return address if re.fullmatch(r"[\da-f]{12}", address) else None
 
 
-def steam_device_state(marks):
-    """What Steam wrote to its logs after the mark. Returns (noticed, way):
-    "hidapi" - the normal way (serial number read, lightbar and Steam Input layout work);
-    "evdev"  - Steam opened the controller as an ordinary kernel device: serial number not read, default lightbar,
-               buttons A and B swapped;
-    None     - the way is not clear yet (Steam has not finished writing the lines)."""
-    seen, path = False, None
+def steam_device_state(marks, hid, mac):
+    """Find the target's fresh Steam log entry by model and address, if available.
+
+    Steam can leave the serial field blank even on HIDAPI. Attribute such an entry
+    only when this HID device is the sole local device of that model.
+    """
+    _, vendor, product = hid.split(".", 1)[0].lower().split(":")
+    model = (vendor, product)
+    address = controller_address(mac)
+    siblings = glob.glob(os.path.join(HID_DIR, "*:%s:%s.*" % (vendor.upper(), product.upper())))
+    sole_device = [os.path.basename(p) for p in siblings] == [hid]
+    seen = False
     for fpath, size in marks.items():
         try:
             with open(fpath, "rb") as f:
@@ -101,16 +115,22 @@ def steam_device_state(marks):
                 data = f.read().decode(errors="replace")
         except OSError:
             continue
-        if any(k in data for k in STEAM_MARKERS):
+        for entry in reversed(STEAM_DEVICE.split(data)[1:]):
+            device_type = STEAM_TYPE.search(entry)
+            if not device_type or tuple(x.lower() for x in device_type.groups()) != model:
+                continue
+            serial = STEAM_SERIAL.search(entry)
+            entry_address = controller_address(serial[1].split(" -", 1)[0]) if serial else None
+            if entry_address and entry_address != address:
+                continue
             seen = True
-        i = data.rfind("Local Device Found")
-        if i >= 0:
-            tail = data[i:]
-            if STEAM_BAD_SERIAL in tail:
-                path = "evdev"
-            elif "HIDAPI driver" in tail and path != "evdev":
-                path = "hidapi"
-    return seen, path
+            if entry_address or sole_device:
+                if STEAM_BAD_SERIAL in entry:
+                    return True, "evdev"
+                if any((vid.lower(), pid.lower()) == model for vid, pid in STEAM_HIDAPI.findall(entry)):
+                    return True, "hidapi"
+            break
+    return seen, None
 
 
 def steam_running():
